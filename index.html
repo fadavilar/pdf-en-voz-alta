@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PDF en voz alta</title>
+  <meta name="description" content="Abre un PDF y escúchalo en español. Resalta cada oración, respeta las columnas de los artículos y funciona con archivos escaneados. El archivo no sale de tu navegador.">
+  <meta name="theme-color" content="#0B5C66">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230B5C66'/%3E%3Cg fill='%23FFE14A'%3E%3Crect x='6' y='13' width='3' height='6'/%3E%3Crect x='11' y='8' width='3' height='16'/%3E%3Crect x='16' y='11' width='3' height='10'/%3E%3Crect x='21' y='6' width='3' height='20'/%3E%3C/g%3E%3C/svg%3E">
+  <!-- Habilita varios hilos para la voz neuronal: GitHub Pages no permite fijar estas cabeceras en el servidor. -->
+  <script>window.coi = { quiet: true };</script>
+  <script src="coi-serviceworker.js"></script>
+  <link rel="stylesheet" href="css/app.css?v=20261103a">
+  <script>
+    try {
+      const guardado = localStorage.getItem('pdfvoz:tema');
+      if (guardado) document.documentElement.dataset.theme = guardado;
+    } catch { /* sin almacenamiento: se sigue el tema del sistema */ }
+  </script>
+</head>
+<body>
+  <header class="cabecera">
+    <a class="marca-app" href="./" aria-label="PDF en voz alta, inicio">
+      <svg viewBox="0 0 32 20" width="32" height="20" aria-hidden="true"><g fill="currentColor"><rect x="0" y="7" width="4" height="6"/><rect x="7" y="2" width="4" height="16"/><rect x="14" y="5" width="4" height="10"/><rect x="21" y="0" width="4" height="20"/><rect x="28" y="8" width="4" height="4"/></g></svg>
+      <span>PDF en voz alta</span>
+    </a>
+    <p class="nombre-archivo" id="nombre-archivo"></p>
+    <div class="cabecera-acciones">
+      <div class="segmento" id="vistas" role="group" aria-label="Vista" hidden>
+        <button type="button" data-vista="pdf" aria-pressed="true">PDF</button>
+        <button type="button" data-vista="texto" aria-pressed="false">Texto</button>
+      </div>
+      <div class="zoom" id="zoom" role="group" aria-label="Tamaño de la página" hidden>
+        <button type="button" class="icono" id="zoom-menos" aria-label="Reducir página"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h12" /></svg></button>
+        <button type="button" class="icono" id="zoom-mas" aria-label="Ampliar página"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h12M10 4v12" /></svg></button>
+      </div>
+      <button type="button" class="boton-suave" id="abrir-otro" hidden>Abrir</button>
+      <button type="button" class="boton-suave" id="abrir-ajustes">Ajustes</button>
+      <button type="button" class="icono" id="tema" aria-label="Cambiar entre tema claro y oscuro">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="6.5" /><path d="M10 3.5a6.5 6.5 0 0 1 0 13z" fill="currentColor" stroke="none" /></svg>
+      </button>
+    </div>
+  </header>
+
+  <main id="inicio" class="inicio">
+    <h1 class="titular"><span class="titular-marca">Abre un PDF y escúchalo en español.</span></h1>
+    <p class="entrada">Cada oración se resalta mientras suena. Las columnas de los artículos se leen en orden, y puedes saltarte citas y referencias.</p>
+    <div class="zona-carga" id="zona-carga">
+      <p class="zona-texto">Arrastra el archivo hasta aquí</p>
+      <div class="zona-acciones">
+        <button type="button" class="boton-principal" id="abrir">Abrir PDF</button>
+        <button type="button" class="boton-suave" id="ejemplo">Probar con un ejemplo</button>
+      </div>
+    </div>
+    <p class="garantia">El PDF se procesa en tu navegador y no se sube a ningún servidor.</p>
+    <p class="autoria">Fabian Dávila Ramírez, MD, MBA, PhD</p>
+  </main>
+
+  <main id="lector" class="lector" hidden>
+    <div class="avisos" id="avisos" aria-live="polite"></div>
+    <div class="paneles" data-vista="pdf">
+      <section class="panel-pdf" id="panel-pdf" aria-label="Páginas del PDF"></section>
+      <section class="panel-texto" id="panel-texto" aria-label="Texto que se va a leer"></section>
+    </div>
+    <div class="consola">
+      <div class="pulso-marco">
+        <canvas id="pulso" class="pulso" tabindex="0" role="slider" aria-label="Posición en el documento" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"></canvas>
+        <div class="pulso-globo" id="pulso-globo" hidden></div>
+      </div>
+      <div class="mandos">
+        <div class="mandos-principales">
+          <button type="button" class="icono grande" id="anterior" aria-label="Oración anterior" title="Oración anterior (flecha izquierda)">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14" /><path d="M19 5 9 12l10 7z" fill="currentColor" /></svg>
+          </button>
+          <button type="button" class="reproducir" id="reproducir" aria-label="Reproducir" title="Reproducir o pausar (barra espaciadora)">
+            <svg class="i-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5 20 12 7 19.5z" fill="currentColor" stroke="none" /></svg>
+            <svg class="i-pausa" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" fill="currentColor" stroke="none" /></svg>
+            <span class="i-espera" aria-hidden="true"></span>
+          </button>
+          <button type="button" class="icono grande" id="siguiente" aria-label="Oración siguiente" title="Oración siguiente (flecha derecha)">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 5v14" /><path d="m5 5 10 7-10 7z" fill="currentColor" /></svg>
+          </button>
+        </div>
+        <p class="estado" id="estado" aria-live="polite"></p>
+        <div class="mandos-voz">
+          <label class="control-velocidad">
+            <span>Velocidad <output id="velocidad-valor">1,0×</output></span>
+            <input type="range" id="velocidad" min="0.6" max="2" step="0.1" value="1">
+          </label>
+          <button type="button" class="boton-voz" id="abrir-voz">
+            <span class="boton-voz-rotulo">Voz</span>
+            <span id="voz-actual" class="boton-voz-nombre"></span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <dialog class="dialogo" id="ajustes" aria-labelledby="ajustes-titulo">
+    <div class="dialogo-cabeza">
+      <h2 id="ajustes-titulo">Ajustes</h2>
+      <button type="button" class="icono" id="cerrar-ajustes" aria-label="Cerrar ajustes"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" /></svg></button>
+    </div>
+
+    <section>
+      <h3>Voz</h3>
+      <label class="campo" for="voz">Elige quién lee</label>
+      <select id="voz"></select>
+      <p class="nota" id="voz-nota"></p>
+      <div class="descarga" id="voz-descarga" hidden>
+        <button type="button" class="boton-principal" id="voz-descargar">Descargar voz</button>
+        <button type="button" class="boton-suave" id="voz-borrar" hidden>Borrar voz de este equipo</button>
+        <progress id="voz-progreso" max="1" value="0" hidden></progress>
+      </div>
+      <button type="button" class="boton-suave" id="voz-probar">Escuchar una frase de prueba</button>
+    </section>
+
+    <section>
+      <h3>Qué se lee</h3>
+      <label class="casilla"><input type="checkbox" id="omitir-referencias" checked> Saltar la lista de referencias</label>
+      <label class="casilla"><input type="checkbox" id="omitir-citas" checked> Saltar citas dentro del texto, como [3] o (Pérez, 2020)</label>
+      <p class="nota">Los encabezados, pies y números de página no se leen nunca. Lo que quedó fuera sigue visible en el texto: púlsalo si quieres oírlo.</p>
+    </section>
+
+    <section id="seccion-ocr" hidden>
+      <h3>Texto reconocido</h3>
+      <p class="nota">Si el texto se oye mal, el PDF puede tener letras mal codificadas. El reconocimiento lee la imagen de cada página.</p>
+      <button type="button" class="boton-suave" id="ocr-forzar">Reconocer el texto de todas las páginas</button>
+    </section>
+
+    <section>
+      <h3>Atajos de teclado</h3>
+      <dl class="atajos">
+        <div><dt>Barra espaciadora</dt><dd>Reproducir o pausar</dd></div>
+        <div><dt>Flechas izquierda y derecha</dt><dd>Oración anterior o siguiente</dd></div>
+        <div><dt>Flechas arriba y abajo</dt><dd>Más rápido o más lento</dd></div>
+      </dl>
+    </section>
+
+    <section>
+      <h3>Créditos y licencias</h3>
+      <p class="nota">App de Fabian Dávila Ramírez, MD, MBA, PhD, con licencia MIT. Usa
+        <a href="https://github.com/mozilla/pdf.js" rel="noopener" target="_blank">PDF.js</a> y
+        <a href="https://github.com/naptha/tesseract.js" rel="noopener" target="_blank">Tesseract.js</a> (Apache-2.0),
+        <a href="https://github.com/microsoft/onnxruntime" rel="noopener" target="_blank">ONNX Runtime Web</a> (MIT),
+        <a href="https://github.com/diffusion-studio/piper-wasm" rel="noopener" target="_blank">piper-wasm</a> con
+        <a href="https://github.com/espeak-ng/espeak-ng" rel="noopener" target="_blank">eSpeak NG</a> (GPL-3.0) y las
+        <a href="https://huggingface.co/rhasspy/piper-voices" rel="noopener" target="_blank">voces de Piper</a>:
+        Ald (Unlicense), Claude (Apache-2.0; voz de HirCoir, sin relación con Anthropic), Davefx (CC0) y Daniela (CC BY-SA 4.0, de larcanio).
+        Tipografías Literata y Atkinson Hyperlegible (OFL).</p>
+    </section>
+  </dialog>
+
+  <dialog class="dialogo dialogo-corto" id="clave" aria-labelledby="clave-titulo">
+    <form method="dialog" id="clave-form">
+      <h2 id="clave-titulo">Este PDF tiene contraseña</h2>
+      <label class="campo" for="clave-valor" id="clave-rotulo">Escribe la contraseña para abrirlo</label>
+      <input type="password" id="clave-valor" autocomplete="off">
+      <div class="zona-acciones">
+        <button type="submit" class="boton-principal" value="ok">Abrir PDF</button>
+        <button type="submit" class="boton-suave" value="no" formnovalidate>Cancelar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="soltar" id="soltar" hidden>Suelta el PDF para abrirlo</div>
+  <input type="file" id="archivo" accept="application/pdf,.pdf" hidden>
+  <audio id="audio" preload="auto"></audio>
+  <script type="module" src="js/app.js?v=20261103a"></script>
+</body>
+</html>
