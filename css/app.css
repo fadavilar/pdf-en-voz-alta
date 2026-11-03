@@ -419,6 +419,10 @@ svg { stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linej
   .zona-acciones button { flex: 1 1 100%; }
 }
 
+@media (max-width: 360px) {
+  .marca-app { display: none; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .titular-marca { animation: none; }
   .reproducir[data-espera='si'] .i-espera { animation-duration: 3s; }
