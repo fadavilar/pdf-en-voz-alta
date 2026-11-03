@@ -189,9 +189,20 @@ svg { stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linej
 
 .garantia { margin: 20px 0 0; }
 
-.instalar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; margin-top: 32px; }
+.instalar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+  margin-bottom: clamp(24px, 5vh, 48px);
+  padding: 12px 16px;
+  border: 1px solid var(--linea);
+  border-radius: 10px;
+  background: var(--superficie);
+}
+.inicio:has(.instalar:not([hidden])) { padding-top: 16px; }
 .instalar img { flex: none; border-radius: 12px; }
-.instalar-texto { flex: 1 1 240px; min-width: 0; }
+.instalar-texto { flex: 1 1 180px; min-width: 0; }
 .instalar-titulo { margin: 0; font-weight: 700; }
 .instalar .nota { margin: 2px 0 0; }
 .autoria { margin: 48px 0 0; color: var(--tinta-suave); font-size: 0.9rem; }

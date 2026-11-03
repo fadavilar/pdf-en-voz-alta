@@ -16,7 +16,7 @@
   <!-- Habilita varios hilos para la voz neuronal: GitHub Pages no permite fijar estas cabeceras en el servidor. -->
   <script>window.coi = { quiet: true };</script>
   <script src="coi-serviceworker.js"></script>
-  <link rel="stylesheet" href="css/app.css?v=20261103c">
+  <link rel="stylesheet" href="css/app.css?v=20261103d">
   <script>
     try {
       const guardado = localStorage.getItem('pdfvoz:tema');
@@ -49,6 +49,14 @@
   </header>
 
   <main id="inicio" class="inicio">
+    <div class="instalar" id="instalar-inicio" hidden>
+      <img src="iconos/icono-192.png" width="56" height="56" alt="">
+      <div class="instalar-texto">
+        <p class="instalar-titulo">Instálala en tu celular</p>
+        <p class="nota" data-instalar-texto></p>
+      </div>
+      <button type="button" class="boton-suave" data-instalar hidden>Instalar app</button>
+    </div>
     <h1 class="titular"><span class="titular-marca">Abre un PDF y escúchalo en español.</span></h1>
     <p class="entrada">Cada oración se resalta mientras suena. Las columnas de los artículos se leen en orden, y puedes saltarte citas y referencias.</p>
     <div class="zona-carga" id="zona-carga">
@@ -59,14 +67,6 @@
       </div>
     </div>
     <p class="garantia">El PDF se procesa en tu navegador y no se sube a ningún servidor.</p>
-    <div class="instalar" id="instalar-inicio" hidden>
-      <img src="iconos/icono-192.png" width="56" height="56" alt="">
-      <div class="instalar-texto">
-        <p class="instalar-titulo">Instálala en tu celular</p>
-        <p class="nota" data-instalar-texto></p>
-      </div>
-      <button type="button" class="boton-suave" data-instalar hidden>Instalar app</button>
-    </div>
     <p class="autoria">Fabian Dávila Ramírez, MD, MBA, PhD</p>
   </main>
 
