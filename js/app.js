@@ -6,7 +6,9 @@ import { Pulso } from './pulso.js';
 import { reconocerPaginas } from './ocr.js';
 import {
   VOCES_NEURONALES, MotorDispositivo, MotorNeuronal, vocesDelDispositivo, alCambiarVoces, vozGuardada, motorGuardado, borrarVoz,
-} from './motores.js';
+} from './motores.js?v=20261103b';
+import { planificar, nombreMp3, duracionLegible, pesoLegible, ExportacionMp3 } from './exportar.js';
+import { iniciarInstalacion } from './instalar.js';
 
 const BASE_PDFJS = new URL('../vendor/pdfjs/', import.meta.url).href;
 pdfjs.GlobalWorkerOptions.workerSrc = `${BASE_PDFJS}pdf.worker.min.mjs`;
@@ -306,7 +308,7 @@ function pintarEstado() {
 }
 
 function bloquearMandos(bloqueado) {
-  for (const id of ['reproducir', 'anterior', 'siguiente']) $(id).disabled = bloqueado;
+  for (const id of ['reproducir', 'anterior', 'siguiente', 'abrir-descarga']) $(id).disabled = bloqueado;
 }
 
 function pintarBotonReproducir() {
@@ -556,6 +558,144 @@ async function probarVoz() {
   }
 }
 
+/* ---------- Descargar audio ---------- */
+
+const descarga = { trabajo: null, url: null, vigilia: null };
+
+function panelDescarga(cual) {
+  for (const p of ['opciones', 'proceso', 'lista']) $(`descarga-${p}`).hidden = p !== cual;
+  $('cerrar-descarga').hidden = cual === 'proceso';
+}
+
+function limitesDescarga() {
+  const total = estado.paginas.length;
+  const acotar = (v, porDefecto) => Math.min(total, Math.max(1, Number.parseInt(v, 10) || porDefecto));
+  const desde = acotar($('descarga-desde').value, 1);
+  return { desde, hasta: Math.max(desde, acotar($('descarga-hasta').value, total)), total };
+}
+
+function planDescarga() {
+  const { desde, hasta } = limitesDescarga();
+  return planificar(estado.oraciones, { desde, hasta, omitida, textoVoz, velocidad: estado.velocidad });
+}
+
+async function pintarResumenDescarga() {
+  const plan = planDescarga();
+  const velocidad = estado.velocidad.toFixed(1).replace('.', ',');
+  const hay = plan.textos.length > 0;
+  $('descarga-generar').disabled = !hay;
+  $('descarga-resumen').textContent = hay
+    ? `Cerca de ${duracionLegible(plan.segundos)} de audio y ${pesoLegible(plan.bytes)}, a velocidad ${velocidad}×.`
+    : 'Esas páginas no tienen texto para leer. Elige otro rango.';
+  const v = VOCES_NEURONALES.find((x) => x.id === $('descarga-voz').value);
+  const [hayVoz, hayMotor] = await Promise.all([vozGuardada(v), motorGuardado()]);
+  const mb = (hayVoz ? 0 : Math.round(v.bytes / 1e6)) + (hayMotor ? 0 : PESO_MOTOR_MB);
+  $('descarga-primera').hidden = mb === 0;
+  $('descarga-primera').textContent = `Antes se descargan ${mb} MB de la voz y el motor, una sola vez.`;
+}
+
+function abrirDescarga() {
+  if (descarga.trabajo || !$('descarga-lista').hidden) {
+    $('descarga').showModal();
+    return;
+  }
+  const select = $('descarga-voz');
+  if (!select.options.length) {
+    for (const v of VOCES_NEURONALES) {
+      const o = document.createElement('option');
+      o.value = v.id;
+      o.textContent = `${v.nombre}, ${Math.round(v.bytes / 1e6)} MB`;
+      select.append(o);
+    }
+  }
+  const actual = esNeuronal(estado.vozElegida) ? vozNeuronal(estado.vozElegida)?.id : null;
+  select.value = actual ?? leer('vozDescarga') ?? VOCES_NEURONALES[0].id;
+  if (!select.value) select.value = VOCES_NEURONALES[0].id;
+  const total = estado.paginas.length;
+  for (const id of ['descarga-desde', 'descarga-hasta']) $(id).max = total;
+  $('descarga-desde').value = 1;
+  $('descarga-hasta').value = total;
+  if (!$('descarga').open) $('descarga').showModal();
+  pintarResumenDescarga();
+}
+
+async function generarMp3() {
+  const v = VOCES_NEURONALES.find((x) => x.id === $('descarga-voz').value);
+  const plan = planDescarga();
+  if (!plan.textos.length) return;
+  const { desde, hasta, total } = limitesDescarga();
+  guardar('vozDescarga', v.id);
+  detener();
+  neuronal.liberar(); // el modelo de lectura no debe ocupar memoria mientras se genera el archivo
+  panelDescarga('proceso');
+  $('descarga-estado').textContent = 'Preparando la voz…';
+  $('descarga-barra').value = 0;
+  $('descarga-parcial').disabled = true;
+
+  try {
+    descarga.vigilia = await navigator.wakeLock?.request('screen');
+  } catch { /* sin bloqueo de pantalla: la generación sigue igual */ }
+
+  const trabajo = new ExportacionMp3({ voz: v, textos: plan.textos, velocidad: estado.velocidad }, {
+    alDescargar: (hecho, totalBytes) => {
+      $('descarga-estado').textContent = `Descargando la voz: ${Math.round(hecho / 1e6)} de ${Math.round(totalBytes / 1e6)} MB.`;
+      $('descarga-barra').value = totalBytes ? hecho / totalBytes : 0;
+    },
+    alGenerar: () => {
+      $('descarga-estado').textContent = `Generando la oración 1 de ${plan.textos.length}…`;
+      $('descarga-barra').value = 0;
+    },
+    alAvance: ({ hechas, total: oraciones, restante }) => {
+      $('descarga-estado').textContent = hechas >= oraciones
+        ? 'Terminando el archivo…'
+        : `Generando la oración ${hechas + 1} de ${oraciones}. Quedan cerca de ${duracionLegible(restante)}.`;
+      $('descarga-barra').value = hechas / oraciones;
+      $('descarga-parcial').disabled = !trabajo.hayAudio;
+    },
+  });
+  descarga.trabajo = trabajo;
+
+  let resultado = null;
+  let error = null;
+  try {
+    resultado = await trabajo.promesa;
+  } catch (e) {
+    error = e;
+  }
+  descarga.trabajo = null;
+  descarga.vigilia?.release().catch(() => {});
+  descarga.vigilia = null;
+
+  if (error) {
+    panelDescarga('opciones');
+    $('descarga-resumen').textContent = `No se pudo generar el audio: ${error.message} Revisa la conexión y vuelve a intentarlo.`;
+    return;
+  }
+  if (!resultado) {
+    panelDescarga('opciones');
+    pintarResumenDescarga();
+    return;
+  }
+  mostrarMp3(resultado, nombreMp3(estado.nombre, { desde, hasta, total, parcial: resultado.parcial }));
+}
+
+function mostrarMp3({ blob, segundos, fallos, hechas, total, parcial }, nombre) {
+  if (descarga.url) URL.revokeObjectURL(descarga.url);
+  descarga.url = URL.createObjectURL(blob);
+  $('descarga-oir').src = descarga.url;
+  const enlace = $('descarga-guardar');
+  enlace.href = descarga.url;
+  enlace.download = nombre;
+  $('descarga-final').textContent = `${parcial ? 'Audio parcial listo' : 'Tu MP3 está listo'}: ${duracionLegible(segundos)} y ${pesoLegible(blob.size)}.`;
+  const avisos = [];
+  if (parcial) avisos.push(`Incluye ${hechas} de ${total} oraciones.`);
+  if (fallos) avisos.push(`${fallos} ${fallos === 1 ? 'oración no se pudo generar y quedó fuera' : 'oraciones no se pudieron generar y quedaron fuera'}.`);
+  $('descarga-aviso').hidden = !avisos.length;
+  $('descarga-aviso').textContent = avisos.join(' ');
+  panelDescarga('lista');
+  enlace.click();
+}
+
 /* ---------- Texto escaneado ---------- */
 
 async function ejecutarOcr(numeros) {
@@ -626,7 +766,8 @@ function errorInicio(mensaje) {
 
 async function abrirArchivo(archivo) {
   document.querySelector('.error-inicio')?.remove();
-  if (!archivo) return;
+  if (!archivo || descarga.trabajo) return;
+  panelDescarga('opciones');
   if (archivo.type && archivo.type !== 'application/pdf' && !/\.pdf$/i.test(archivo.name)) {
     errorInicio(`«${archivo.name}» no es un PDF. Elige un archivo que termine en .pdf.`);
     return;
@@ -696,6 +837,25 @@ $('abrir-voz').addEventListener('click', abrirAjustes);
 $('cerrar-ajustes').addEventListener('click', () => $('ajustes').close());
 $('ajustes').addEventListener('click', (e) => {
   if (e.target === $('ajustes')) $('ajustes').close();
+});
+
+$('abrir-descarga').addEventListener('click', abrirDescarga);
+$('cerrar-descarga').addEventListener('click', () => $('descarga').close());
+$('descarga').addEventListener('close', () => $('descarga-oir').pause());
+$('descarga').addEventListener('cancel', (e) => {
+  if (descarga.trabajo) e.preventDefault();
+});
+$('descarga').addEventListener('click', (e) => {
+  if (e.target === $('descarga') && !descarga.trabajo) $('descarga').close();
+});
+for (const id of ['descarga-voz', 'descarga-desde', 'descarga-hasta']) $(id).addEventListener('input', pintarResumenDescarga);
+$('descarga-generar').addEventListener('click', generarMp3);
+$('descarga-parcial').addEventListener('click', () => descarga.trabajo?.detenerYGuardar());
+$('descarga-cancelar').addEventListener('click', () => descarga.trabajo?.cancelar());
+$('descarga-otro').addEventListener('click', () => {
+  $('descarga-oir').pause();
+  panelDescarga('opciones');
+  abrirDescarga();
 });
 
 $('voz').addEventListener('change', (e) => aplicarVoz(e.target.value));
@@ -798,6 +958,7 @@ if ('mediaSession' in navigator) {
 
 window.addEventListener('beforeunload', () => dispositivo?.detener());
 
+iniciarInstalacion();
 alCambiarVoces(pintarVoces);
 pintarVoces();
 fijarVelocidad(estado.velocidad);

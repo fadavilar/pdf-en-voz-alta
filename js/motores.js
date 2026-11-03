@@ -165,7 +165,7 @@ export class MotorNeuronal {
   async preparar(voz) {
     if (this.vozLista === voz.id) return;
     if (!this.worker) {
-      this.worker = new Worker('js/piper-worker.js?v=20261103a');
+      this.worker = new Worker('js/piper-worker.js?v=20261103b');
       this.worker.onmessage = (e) => this.#mensaje(e);
       this.worker.onerror = (e) => {
         const error = new Error(e.message || 'El motor de voz neuronal no pudo iniciar.');
@@ -233,6 +233,17 @@ export class MotorNeuronal {
       }
     }
     for (const { i, texto } of lista) this.#obtener(i, texto, false);
+  }
+
+  // Libera la memoria del modelo; la voz vuelve a cargarse desde la caché al reproducir.
+  liberar() {
+    this.detener();
+    this.vaciar();
+    this.worker?.terminate();
+    this.worker = null;
+    this.vozLista = null;
+    this.solicitudes.clear();
+    this.ocupado = false;
   }
 
   vaciar() {

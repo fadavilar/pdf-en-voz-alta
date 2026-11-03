@@ -6,6 +6,7 @@ const FONEMAS_BASE = 'https://cdn.jsdelivr.net/npm/@diffusionstudio/piper-wasm@1
 const VOCES_BASE = 'https://huggingface.co/rhasspy/piper-voices/resolve/main/';
 const ALMACEN = 'pdf-voz-modelos-v1';
 const SILENCIO_ENTRE_ORACIONES = 0.28;
+const KBPS_MP3 = 64;
 
 let sesion = null;
 let configuracion = null;
@@ -125,21 +126,58 @@ function aWav(pcm, frecuencia, silencio) {
   return buffer;
 }
 
-async function sintetizar(texto) {
-  const inicio = performance.now();
+async function generarPcm(texto, velocidad = 1) {
   const ids = await fonemizar(texto);
-  const msFonemas = performance.now() - inicio;
   const { noise_scale: ruido, length_scale: largo, noise_w: ruidoW } = configuracion.inference;
   const entradas = {
     input: new ort.Tensor('int64', BigInt64Array.from(ids.map(BigInt)), [1, ids.length]),
     input_lengths: new ort.Tensor('int64', BigInt64Array.from([BigInt(ids.length)])),
-    scales: new ort.Tensor('float32', Float32Array.from([ruido, largo, ruidoW])),
+    scales: new ort.Tensor('float32', Float32Array.from([ruido, largo / velocidad, ruidoW])),
   };
   if (configuracion.num_speakers > 1) entradas.sid = new ort.Tensor('int64', BigInt64Array.from([0n]));
   const { output } = await sesion.run(entradas);
+  return output.data;
+}
+
+async function sintetizar(texto) {
+  const inicio = performance.now();
+  const pcm = await generarPcm(texto);
   const frecuencia = configuracion.audio.sample_rate;
-  const wav = aWav(output.data, frecuencia, SILENCIO_ENTRE_ORACIONES);
-  return { wav, segundos: output.data.length / frecuencia, ms: performance.now() - inicio, msFonemas };
+  const wav = aWav(pcm, frecuencia, SILENCIO_ENTRE_ORACIONES);
+  return { wav, segundos: pcm.length / frecuencia, ms: performance.now() - inicio };
+}
+
+// Genera y codifica oración por oración: los trozos de MP3 salen del worker según se producen,
+// así que detener a mitad de camino conserva lo ya hecho. Una oración fallida no aborta el archivo.
+async function exportarMp3({ voz, textos, velocidad }) {
+  await preparar(voz);
+  importScripts('../vendor/mp3/WasmMediaEncoder.min.js');
+  const codificador = await WasmMediaEncoder.createEncoder('audio/mpeg', new URL('../vendor/mp3/mp3.wasm', location.href).href);
+  const frecuencia = configuracion.audio.sample_rate;
+  codificador.configure({ sampleRate: frecuencia, channels: 1, bitrate: KBPS_MP3, outputSampleRate: frecuencia });
+  const silencio = new Float32Array(Math.round((frecuencia * SILENCIO_ENTRE_ORACIONES) / velocidad));
+  postMessage({ tipo: 'generando' });
+  let fallos = 0;
+  let segundos = 0;
+  for (const [i, texto] of textos.entries()) {
+    let pcm = null;
+    try {
+      pcm = await generarPcm(texto, velocidad);
+    } catch {
+      fallos++;
+    }
+    if (pcm) {
+      // El arreglo devuelto pertenece al codificador: hay que copiarlo antes de volver a usarlo.
+      const audio = codificador.encode([pcm]).slice();
+      const pausa = codificador.encode([silencio]).slice();
+      segundos += (pcm.length + silencio.length) / frecuencia;
+      postMessage({ tipo: 'trozo', i, segundos, partes: [audio.buffer, pausa.buffer] }, [audio.buffer, pausa.buffer]);
+    } else {
+      postMessage({ tipo: 'trozo', i, segundos, partes: [] });
+    }
+  }
+  const cierre = codificador.finalize().slice();
+  postMessage({ tipo: 'fin', fallos, segundos, partes: [cierre.buffer] }, [cierre.buffer]);
 }
 
 self.onmessage = async ({ data }) => {
@@ -147,6 +185,8 @@ self.onmessage = async ({ data }) => {
     if (data.tipo === 'preparar') {
       await preparar(data.voz);
       postMessage({ tipo: 'lista', id: data.id, hilos: ort.env.wasm.numThreads });
+    } else if (data.tipo === 'exportar') {
+      await exportarMp3(data);
     } else if (data.tipo === 'sintetizar') {
       const r = await sintetizar(data.texto);
       postMessage({ tipo: 'audio', id: data.id, ...r }, [r.wav]);

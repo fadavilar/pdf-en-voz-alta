@@ -12,6 +12,8 @@ Abre un PDF y escúchalo en español, directamente en el navegador. El archivo n
 - Lee las cifras y abreviaturas como lo haría una persona: «IC 95 %» se oye «intervalo de confianza del 95 por ciento».
 - Reconoce el texto de los PDF escaneados con OCR.
 - Recuerda en qué oración quedaste con cada archivo.
+- Descarga el audio en MP3 (64 kbit/s), con voces neuronales, de todo el documento o de un rango de páginas. Usa [wasm-media-encoders](https://github.com/arseneyr/wasm-media-encoders) (MIT) con el codificador LAME (LGPL), en `vendor/mp3/`.
+- Se instala en Android e iOS como app web, con su logo en la pantalla de inicio. No se distribuye por Play Store ni App Store, y necesita conexión para abrirse.
 
 ## Voces
 

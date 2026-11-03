@@ -6,11 +6,17 @@
   <title>PDF en voz alta</title>
   <meta name="description" content="Abre un PDF y escúchalo en español. Resalta cada oración, respeta las columnas de los artículos y funciona con archivos escaneados. El archivo no sale de tu navegador.">
   <meta name="theme-color" content="#0B5C66">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230B5C66'/%3E%3Cg fill='%23FFE14A'%3E%3Crect x='6' y='13' width='3' height='6'/%3E%3Crect x='11' y='8' width='3' height='16'/%3E%3Crect x='16' y='11' width='3' height='10'/%3E%3Crect x='21' y='6' width='3' height='20'/%3E%3C/g%3E%3C/svg%3E">
+  <link rel="icon" href="iconos/icono.svg" type="image/svg+xml">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="iconos/apple-touch-icon.png">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="PDF en voz">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <!-- Habilita varios hilos para la voz neuronal: GitHub Pages no permite fijar estas cabeceras en el servidor. -->
   <script>window.coi = { quiet: true };</script>
   <script src="coi-serviceworker.js"></script>
-  <link rel="stylesheet" href="css/app.css?v=20261103b">
+  <link rel="stylesheet" href="css/app.css?v=20261103c">
   <script>
     try {
       const guardado = localStorage.getItem('pdfvoz:tema');
@@ -53,6 +59,14 @@
       </div>
     </div>
     <p class="garantia">El PDF se procesa en tu navegador y no se sube a ningún servidor.</p>
+    <div class="instalar" id="instalar-inicio" hidden>
+      <img src="iconos/icono-192.png" width="56" height="56" alt="">
+      <div class="instalar-texto">
+        <p class="instalar-titulo">Instálala en tu celular</p>
+        <p class="nota" data-instalar-texto></p>
+      </div>
+      <button type="button" class="boton-suave" data-instalar hidden>Instalar app</button>
+    </div>
     <p class="autoria">Fabian Dávila Ramírez, MD, MBA, PhD</p>
   </main>
 
@@ -91,6 +105,10 @@
             <span class="boton-voz-rotulo">Voz</span>
             <span id="voz-actual" class="boton-voz-nombre"></span>
           </button>
+          <button type="button" class="boton-descarga" id="abrir-descarga" title="Descargar audio en MP3">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 11l5 5 5-5M5 20h14" /></svg>
+            <span>Descargar audio</span>
+          </button>
         </div>
       </div>
     </div>
@@ -128,6 +146,12 @@
       <button type="button" class="boton-suave" id="ocr-forzar">Reconocer el texto de todas las páginas</button>
     </section>
 
+    <section id="seccion-instalar" hidden>
+      <h3>Instalar la app</h3>
+      <p class="nota" data-instalar-texto></p>
+      <button type="button" class="boton-suave" data-instalar hidden>Instalar app</button>
+    </section>
+
     <section>
       <h3>Atajos de teclado</h3>
       <dl class="atajos">
@@ -144,11 +168,61 @@
         <a href="https://github.com/naptha/tesseract.js" rel="noopener" target="_blank">Tesseract.js</a> (Apache-2.0),
         <a href="https://github.com/microsoft/onnxruntime" rel="noopener" target="_blank">ONNX Runtime Web</a> (MIT),
         <a href="https://github.com/diffusion-studio/piper-wasm" rel="noopener" target="_blank">piper-wasm</a> con
-        <a href="https://github.com/espeak-ng/espeak-ng" rel="noopener" target="_blank">eSpeak NG</a> (GPL-3.0) y las
+        <a href="https://github.com/espeak-ng/espeak-ng" rel="noopener" target="_blank">eSpeak NG</a> (GPL-3.0),
+        <a href="https://github.com/arseneyr/wasm-media-encoders" rel="noopener" target="_blank">wasm-media-encoders</a> (MIT) con el codificador LAME (LGPL) y las
         <a href="https://huggingface.co/rhasspy/piper-voices" rel="noopener" target="_blank">voces de Piper</a>:
         Ald (Unlicense), Claude (Apache-2.0; voz de HirCoir, sin relación con Anthropic), Davefx (CC0) y Daniela (CC BY-SA 4.0, de larcanio).
         Tipografías Literata y Atkinson Hyperlegible (OFL).</p>
     </section>
+  </dialog>
+
+  <dialog class="dialogo" id="descarga" aria-labelledby="descarga-titulo">
+    <div class="dialogo-cabeza">
+      <h2 id="descarga-titulo">Descargar audio</h2>
+      <button type="button" class="icono" id="cerrar-descarga" aria-label="Cerrar"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" /></svg></button>
+    </div>
+
+    <div id="descarga-opciones">
+      <section>
+        <label class="campo" for="descarga-voz">Voz</label>
+        <select id="descarga-voz"></select>
+        <p class="nota">Solo las voces neuronales se pueden guardar: el navegador no da acceso al sonido de las voces del sistema.</p>
+        <div class="rango-paginas">
+          <label>Desde la página <input type="number" id="descarga-desde" min="1" value="1" inputmode="numeric"></label>
+          <label>Hasta la página <input type="number" id="descarga-hasta" min="1" value="1" inputmode="numeric"></label>
+        </div>
+      </section>
+      <section>
+        <p class="descarga-resumen" id="descarga-resumen" aria-live="polite"></p>
+        <p class="nota" id="descarga-primera" hidden></p>
+        <p class="nota">Se aplican tu velocidad y lo que elegiste saltar en Ajustes. El audio se genera en tu equipo, y el texto no sale de él.</p>
+        <button type="button" class="boton-principal" id="descarga-generar">Generar MP3</button>
+      </section>
+    </div>
+
+    <div id="descarga-proceso" hidden>
+      <section>
+        <p class="descarga-resumen" id="descarga-estado" aria-live="polite"></p>
+        <progress id="descarga-barra" max="1" value="0"></progress>
+        <p class="nota">Deja esta pestaña abierta hasta que termine. Si la cierras, se pierde lo generado.</p>
+        <div class="zona-acciones">
+          <button type="button" class="boton-principal" id="descarga-parcial" disabled>Detener y guardar lo generado</button>
+          <button type="button" class="boton-suave" id="descarga-cancelar">Cancelar</button>
+        </div>
+      </section>
+    </div>
+
+    <div id="descarga-lista" hidden>
+      <section>
+        <p class="descarga-resumen" id="descarga-final" role="status"></p>
+        <p class="nota" id="descarga-aviso" hidden></p>
+        <audio id="descarga-oir" controls preload="metadata"></audio>
+        <div class="zona-acciones">
+          <a class="boton-principal" id="descarga-guardar">Guardar MP3</a>
+          <button type="button" class="boton-suave" id="descarga-otro">Generar otro</button>
+        </div>
+      </section>
+    </div>
   </dialog>
 
   <dialog class="dialogo dialogo-corto" id="clave" aria-labelledby="clave-titulo">
@@ -166,6 +240,6 @@
   <div class="soltar" id="soltar" hidden>Suelta el PDF para abrirlo</div>
   <input type="file" id="archivo" accept="application/pdf,.pdf" hidden>
   <audio id="audio" preload="auto"></audio>
-  <script type="module" src="js/app.js?v=20261103a"></script>
+  <script type="module" src="js/app.js?v=20261103b"></script>
 </body>
 </html>

@@ -3,6 +3,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { construirDocumento, segmentar } from '../js/extraccion.js';
 import { paraVoz } from '../js/pronunciacion.js';
+import { planificar, nombreMp3, duracionLegible } from '../js/exportar.js';
+import { plataforma } from '../js/instalar.js';
 
 const caja = (str, x, top, w = str.length * 5, h = 10) => ({ str, x, base: top + h * 0.86, top, w, h });
 
@@ -97,4 +99,40 @@ test('adapta símbolos, unidades y citas para la voz', () => {
   assert.equal(paraVoz('Costó 1.234.567 pesos, ver https://ejemplo.org/a.'), 'Costó 1234567 pesos, ver enlace');
   assert.equal(paraVoz('Según la norma [2].', { citas: true }), 'Según la norma [2].');
   assert.equal(paraVoz('MATERIALES Y MÉTODOS'), 'Materiales y métodos');
+});
+
+test('el plan del MP3 respeta páginas, omisiones y velocidad', () => {
+  const oraciones = [
+    { pagina: 0, texto: 'a'.repeat(140), referencia: false },
+    { pagina: 1, texto: 'b'.repeat(140), referencia: false },
+    { pagina: 1, texto: 'c'.repeat(140), referencia: true },
+    { pagina: 2, texto: '', referencia: false },
+  ];
+  const base = { omitida: (o) => o.referencia, textoVoz: (o) => o.texto };
+  const todo = planificar(oraciones, { ...base, desde: 1, hasta: 3, velocidad: 1 });
+  assert.equal(todo.textos.length, 2);
+  const parte = planificar(oraciones, { ...base, desde: 2, hasta: 2, velocidad: 1 });
+  assert.deepEqual(parte.textos, ['b'.repeat(140)]);
+  const rapido = planificar(oraciones, { ...base, desde: 1, hasta: 3, velocidad: 2 });
+  assert.ok(Math.abs(rapido.segundos - todo.segundos / 2) < 0.001);
+});
+
+test('nombra el MP3 según el PDF y el rango', () => {
+  assert.equal(nombreMp3('Artículo: final.PDF', { desde: 1, hasta: 9, total: 9 }), 'Artículo final.mp3');
+  assert.equal(nombreMp3('libro.pdf', { desde: 3, hasta: 5, total: 9 }), 'libro (páginas 3-5).mp3');
+  assert.equal(nombreMp3('libro.pdf', { desde: 1, hasta: 9, total: 9, parcial: true }), 'libro (parcial).mp3');
+});
+
+test('expresa la duración en minutos y horas', () => {
+  assert.equal(duracionLegible(20), '20 s');
+  assert.equal(duracionLegible(1500), '25 min');
+  assert.equal(duracionLegible(4500), '1 h 15 min');
+});
+
+test('reconoce la plataforma para explicar cómo instalar', () => {
+  assert.equal(plataforma('Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)'), 'ios');
+  assert.equal(plataforma('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', 5), 'ios');
+  assert.equal(plataforma('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', 0), 'otro');
+  assert.equal(plataforma('Mozilla/5.0 (Linux; Android 14; Pixel 8)'), 'android');
+  assert.equal(plataforma('Mozilla/5.0 (Windows NT 10.0; Win64; x64)'), 'otro');
 });
