@@ -766,7 +766,7 @@ document.addEventListener('keydown', (e) => {
   if (e.altKey || e.ctrlKey || e.metaKey || !estado.oraciones.length || $('lector').hidden) return;
   if (document.querySelector('dialog[open]')) return;
   const objetivo = e.target;
-  if (objetivo.matches('input, select, textarea') && !(objetivo.type === 'range' && e.key === ' ')) return;
+  if (objetivo.matches?.('input, select, textarea') && !(objetivo.type === 'range' && e.key === ' ')) return;
   if (e.key === ' ' && objetivo.tagName !== 'BUTTON') {
     e.preventDefault();
     alternar();

@@ -57,6 +57,12 @@ test('une palabras partidas con guion y conserva el resaltado por línea', () =>
   assert.equal(oraciones[0].rects.length, 2);
 });
 
+test('no separa una palabra con guion opcional a mitad de línea', () => {
+  const items = [caja('El inter­', 60, 100, 60), caja('valo de confianza.', 128, 100, 120)];
+  const { oraciones } = construirDocumento([{ W: 600, H: 800, items }]);
+  assert.equal(oraciones[0].texto, 'El intervalo de confianza.');
+});
+
 test('continúa una oración entre páginas y quita encabezado y número de página', () => {
   const pagina = (n, cuerpo) => ({
     W: 600,

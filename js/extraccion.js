@@ -211,7 +211,12 @@ function armarBloque(cajas, numPagina, alturaGlobal) {
       const centro = c.top + c.h / 2;
       const esVolado = c.h < altoLinea * 0.8 && centro < centroLinea - altoLinea * 0.08;
       if (esVolado && /^[\d,\s\-–*†‡]+$/.test(c.str)) continue; // llamada de cita en superíndice
-      if (bloque.texto && !/\s$/.test(bloque.texto) && finPrevio !== null) {
+      if (bloque.texto.endsWith('­')) {
+        // Guion opcional a mitad de línea: es la misma palabra aunque venga en dos trozos.
+        bloque.texto = bloque.texto.slice(0, -1);
+        const ultimo = bloque.tramos.at(-1);
+        if (ultimo) ultimo.fin = Math.min(ultimo.fin, bloque.texto.length);
+      } else if (bloque.texto && !/\s$/.test(bloque.texto) && finPrevio !== null) {
         const hueco = c.x - finPrevio;
         if ((c.ocr || hueco > altoLinea * 0.12) && !/^\s/.test(c.str)) bloque.texto += ' ';
       }
