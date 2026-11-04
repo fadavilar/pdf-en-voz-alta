@@ -1,7 +1,7 @@
 // Ejecutar con: node --test tests/texto.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { construirDocumento, segmentar } from '../js/extraccion.js';
+import { construirDocumento, segmentar, idiomaDeTexto } from '../js/extraccion.js';
 import { paraVoz } from '../js/pronunciacion.js';
 import { planificar, nombreMp3, duracionLegible } from '../js/exportar.js';
 import { plataforma } from '../js/instalar.js';
@@ -135,4 +135,61 @@ test('reconoce la plataforma para explicar cómo instalar', () => {
   assert.equal(plataforma('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', 0), 'otro');
   assert.equal(plataforma('Mozilla/5.0 (Linux; Android 14; Pixel 8)'), 'android');
   assert.equal(plataforma('Mozilla/5.0 (Windows NT 10.0; Win64; x64)'), 'otro');
+});
+
+test('la bibliografía de un capítulo no apaga el resto del libro', () => {
+  const items = [
+    caja('Primer capítulo con su cuerpo de texto completo.', 60, 100, 300),
+    caja('Referencias', 60, 160, 100, 14),
+    caja('1. Pérez J. Título del trabajo. Rev Salud. 2020;12(3):1-10.', 60, 200, 400),
+    caja('Capítulo dos', 60, 260, 120, 18),
+    caja('El segundo capítulo también se tiene que leer.', 60, 300, 300),
+  ];
+  const { oraciones } = construirDocumento([{ W: 600, H: 800, items }]);
+  const buscar = (t) => oraciones.find((o) => o.texto.startsWith(t));
+  assert.equal(buscar('El segundo').referencia, false);
+  assert.equal(buscar('Capítulo dos').referencia, false);
+  assert.equal(buscar('PDF') ?? false, false);
+  assert.ok(oraciones.some((o) => o.referencia));
+});
+
+test('sin título grande, la bibliografía termina donde vuelve la prosa', () => {
+  const prosa = (y) => caja('Este es un párrafo normal de un libro, sin citas ni años en ninguna parte.', 60, y, 400);
+  const items = [
+    caja('Referencias', 60, 100, 100, 14),
+    caja('2. Brown L. Costos y consecuencias. J Health Policy. 2020;12:45-60.', 60, 140, 400),
+    prosa(200),
+    prosa(240),
+    prosa(280),
+  ];
+  const { oraciones } = construirDocumento([{ W: 600, H: 800, items }]);
+  assert.equal(oraciones.at(-1).referencia, false);
+  assert.ok(oraciones.some((o) => o.referencia));
+});
+
+test('el título «References» de un índice no marca lo que sigue', () => {
+  const items = [
+    caja('References', 60, 100, 100),
+    caja('Health economics studies how resources are allocated in the health system.', 60, 150, 450),
+    caja('Decision makers compare the costs and the effects of each program.', 60, 190, 450),
+    caja('The analysis describes the perspective and the sources of uncertainty.', 60, 230, 450),
+  ];
+  const { oraciones } = construirDocumento([{ W: 600, H: 800, items }]);
+  assert.equal(oraciones.at(-1).referencia, false);
+});
+
+test('reconoce el idioma de cada bloque y hereda en los títulos cortos', () => {
+  assert.equal(idiomaDeTexto('The patients of the trial were treated with the drug and the results were good.'), 'en');
+  assert.equal(idiomaDeTexto('Los pacientes del ensayo recibieron el fármaco y los resultados fueron buenos.'), 'es');
+  assert.equal(idiomaDeTexto('Chapter 2'), null);
+  const items = [
+    caja('Este resumen está escrito en español para los lectores de la revista.', 60, 100, 450),
+    caja('Abstract', 60, 150, 80),
+    caja('This abstract is written in English for the readers of the journal.', 60, 200, 450),
+    caja('Introduction', 60, 250, 80),
+  ];
+  const { oraciones } = construirDocumento([{ W: 600, H: 800, items }]);
+  assert.equal(oraciones[0].idioma, 'es');
+  assert.equal(oraciones.find((o) => o.texto.startsWith('This')).idioma, 'en');
+  assert.equal(oraciones.find((o) => o.texto === 'Introduction').idioma, 'en');
 });

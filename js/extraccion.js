@@ -198,7 +198,15 @@ function ordenLectura(cajas, ctx) {
 }
 
 const TITULO_REFERENCIAS = /^(\d+\.?\s*)?(referencias(\s+bibliogr[aá]ficas)?|bibliograf[ií]a|references|bibliography|literatura citada)\s*:?$/i;
-const TITULO_TRAS_REFERENCIAS = /^(\d+\.?\s*)?(anexos?|ap[eé]ndices?|appendix|agradecimientos|material suplementario)\b/i;
+
+// Una entrada bibliográfica trae año junto a señales de cita; un párrafo normal, no.
+function pareceReferencia(texto) {
+  if (/\bdoi\b|doi\.org|https?:\/\//i.test(texto)) return true;
+  if (!/\b(19|20)\d{2}[a-z]?\b/.test(texto)) return false;
+  return texto.length < 300
+    || /^\s*(\[?\d+[.\])]|\p{Lu}[\p{L}'-]+,?\s+\p{Lu})/u.test(texto)
+    || /\bet al\b|\bpp?\.\s?\d|\d+\s*\(\d+\)\s*:|;\s*\d+/.test(texto);
+}
 
 function armarBloque(cajas, numPagina, alturaGlobal) {
   const lineas = agruparEnLineas(cajas);
@@ -374,15 +382,21 @@ function rectangulos(bloque, ini, fin, paginas) {
 const PALABRAS_ES = new Set('el la los las de del y en que para por con una un se su al es como más o lo este esta son entre sobre también'.split(' '));
 const PALABRAS_EN = new Set('the of and to in that for with is on as are this was by from at an be which were these have has'.split(' '));
 
-export function detectarIdioma(texto) {
-  let es = 0;
+// Idioma de un fragmento, o null si es muy corto para saberlo (un título, por ejemplo).
+export function idiomaDeTexto(texto, minimo = 3) {
+  let es = (texto.match(/[áéíóúñ¿¡]/gi) ?? []).length;
   let en = 0;
   for (const palabra of texto.toLowerCase().match(/\p{L}+/gu) ?? []) {
     if (PALABRAS_ES.has(palabra)) es++;
     if (PALABRAS_EN.has(palabra)) en++;
   }
-  if (es + en < 20) return 'es';
-  return en > es * 1.3 ? 'en' : 'es';
+  if (es + en < minimo) return null;
+  if (en > es * 1.3) return 'en';
+  return es > en ? 'es' : null;
+}
+
+export function detectarIdioma(texto) {
+  return idiomaDeTexto(texto, 20) ?? 'es';
 }
 
 // Devuelve { oraciones, bloques, idioma }.
@@ -401,13 +415,25 @@ export function construirDocumento(paginas) {
   bloques = fusionarContinuaciones(bloques);
   bloques.forEach(resolverPartidas);
 
+  const idiomaDocumento = detectarIdioma(bloques.slice(0, 400).map((b) => b.texto).join(' '));
   const oraciones = [];
   let enReferencias = false;
+  let sinParecido = 0;
+  let idiomaPrevio = idiomaDocumento;
   bloques.forEach((b, numBloque) => {
     const texto = b.texto.trim();
-    if (TITULO_REFERENCIAS.test(texto)) enReferencias = true;
-    else if (enReferencias && b.rol === 'titulo' && TITULO_TRAS_REFERENCIAS.test(texto)) enReferencias = false;
     const esTituloRefs = TITULO_REFERENCIAS.test(texto);
+    // La bibliografía termina donde empieza otra cosa: un libro puede tener una por capítulo.
+    if (esTituloRefs) {
+      enReferencias = true;
+      sinParecido = 0;
+    } else if (enReferencias) {
+      if (pareceReferencia(texto)) sinParecido = 0;
+      else if (b.rol === 'titulo' || texto.length > 400 || ++sinParecido >= 2) enReferencias = false;
+    }
+    const esReferencia = enReferencias && !esTituloRefs && (sinParecido === 0 || texto.length < 200);
+    const idioma = idiomaDeTexto(texto) ?? idiomaPrevio;
+    idiomaPrevio = idioma;
     for (const [ini, fin] of segmentar(b.texto)) {
       const rects = rectangulos(b, ini, fin, limpias);
       oraciones.push({
@@ -417,9 +443,10 @@ export function construirDocumento(paginas) {
         pagina: rects[0]?.p ?? b.pagina,
         bloque: numBloque,
         rol: b.rol,
-        referencia: enReferencias && !esTituloRefs,
+        referencia: esReferencia,
+        idioma,
       });
     }
   });
-  return { oraciones, idioma: detectarIdioma(oraciones.slice(0, 200).map((o) => o.texto).join(' ')) };
+  return { oraciones, idioma: idiomaDocumento };
 }

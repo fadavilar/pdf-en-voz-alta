@@ -1,13 +1,14 @@
 import * as pdfjs from '../vendor/pdfjs/pdf.min.mjs';
-import { itemsDesdePdf, construirDocumento } from './extraccion.js';
+import { itemsDesdePdf, construirDocumento } from './extraccion.js?v=20261104a';
 import { paraVoz } from './pronunciacion.js';
 import { Visor } from './visor.js';
 import { Pulso } from './pulso.js';
 import { reconocerPaginas } from './ocr.js';
 import {
   VOCES_NEURONALES, MotorDispositivo, MotorNeuronal, vocesDelDispositivo, alCambiarVoces, vozGuardada, motorGuardado, borrarVoz,
-} from './motores.js?v=20261103b';
-import { planificar, nombreMp3, duracionLegible, pesoLegible, ExportacionMp3 } from './exportar.js';
+} from './motores.js?v=20261104a';
+import { planificar, nombreMp3, duracionLegible, pesoLegible, ExportacionMp3 } from './exportar.js?v=20261104a';
+import { Traductor } from './traduccion.js';
 import { iniciarInstalacion } from './instalar.js';
 
 const BASE_PDFJS = new URL('../vendor/pdfjs/', import.meta.url).href;
@@ -39,6 +40,8 @@ const estado = {
   velocidad: Number(leer('velocidad')) || 1,
   omitirReferencias: leer('omitirReferencias') !== 'false',
   omitirCitas: leer('omitirCitas') !== 'false',
+  traducir: leer('traducir') !== 'false',
+  esperandoTraduccion: false,
   vozElegida: leer('voz') ?? '',
 };
 
@@ -74,7 +77,8 @@ const pulso = new Pulso($('pulso'), {
     const o = estado.oraciones[i];
     if (!o) return;
     globo.hidden = false;
-    globo.textContent = `Página ${o.pagina + 1}: ${o.texto.slice(0, 60)}${o.texto.length > 60 ? '…' : ''}`;
+    const muestra = textoMostrado(o);
+    globo.textContent = `Página ${o.pagina + 1}: ${muestra.slice(0, 60)}${muestra.length > 60 ? '…' : ''}`;
     const marco = $('pulso').parentElement.clientWidth;
     const mitad = globo.offsetWidth / 2;
     globo.style.left = `${Math.max(mitad + 4, Math.min(marco - mitad - 4, x + 16))}px`;
@@ -129,6 +133,9 @@ async function abrirDatos(datos, nombre, tamano) {
   detener();
   mostrarLector(nombre);
   limpiarAvisos();
+  traduccion.turno++;
+  liberarEsperasDeOtroDocumento();
+  estado.idx = 0;
   $('estado').textContent = 'Abriendo el archivo…';
   $('panel-texto').replaceChildren();
   estado.oraciones = [];
@@ -205,7 +212,8 @@ function procesarTexto() {
   if (inicio > 0) aviso(`Continúas en la página ${oraciones[estado.idx].pagina + 1}, donde quedaste.`, [
     { texto: 'Empezar desde el principio', alPulsar: (n) => { n.remove(); irA(primeraLegible(0)); } },
   ]);
-  if (idioma === 'en') aviso('Este documento parece estar en inglés. Las voces en español lo leerán con ese acento.');
+  if (idioma === 'en' && !estado.traducir) aviso('Este documento parece estar en inglés. Las voces en español lo leerán con ese acento. Puedes activar la traducción en Ajustes.');
+  arrancarTraduccion();
 }
 
 function pintarTexto() {
@@ -231,7 +239,7 @@ function pintarTexto() {
     const s = document.createElement('span');
     s.className = `oracion${omitida(o) ? ' omitida' : ''}`;
     s.dataset.i = o.i;
-    s.textContent = o.texto;
+    s.textContent = textoMostrado(o);
     contenedor.append(s, ' ');
     o.nodo = s;
   }
@@ -247,8 +255,12 @@ function pintarTexto() {
 
 const omitida = (o) => estado.omitirReferencias && o.referencia;
 
+function textoMostrado(o) {
+  return estado.traducir && o.traduccion ? o.traduccion : o.texto;
+}
+
 function textoVoz(o) {
-  o.voz ??= paraVoz(o.texto, { citas: !estado.omitirCitas });
+  o.voz ??= paraVoz(textoMostrado(o), { citas: !estado.omitirCitas });
   return o.voz;
 }
 
@@ -315,6 +327,7 @@ function pintarBotonReproducir() {
   const b = $('reproducir');
   b.dataset.estado = estado.sonando ? 'sonando' : 'detenido';
   b.setAttribute('aria-label', estado.sonando ? 'Pausar' : 'Reproducir');
+  actualizarVigilia();
   if ('mediaSession' in navigator) navigator.mediaSession.playbackState = estado.sonando ? 'playing' : 'paused';
 }
 
@@ -324,7 +337,7 @@ function precargar() {
   let i = estado.idx;
   while (lista.length < 3) {
     i = siguienteLegible(i);
-    if (i < 0) break;
+    if (i < 0 || faltaTraducir(estado.oraciones[i])) break;
     lista.push({ i, texto: textoVoz(estado.oraciones[i]) });
   }
   motor.precargar(lista, estado.idx);
@@ -337,6 +350,15 @@ async function bucle() {
       const o = estado.oraciones[estado.idx];
       if (!o) break;
       marcar();
+      if (faltaTraducir(o)) {
+        estado.esperandoTraduccion = true;
+        $('reproducir').dataset.espera = 'si';
+        $('estado').textContent = 'Traduciendo esta oración…';
+        await esperarTraduccion(o);
+        if (turno !== estado.turno) return;
+        terminarEsperaTraduccion();
+        pintarEstado();
+      }
       precargar();
       const voz = textoVoz(o) || o.texto;
       const resultado = await motor.hablar(estado.idx, voz);
@@ -375,8 +397,21 @@ async function reproducir() {
 }
 
 // La oración queda a medias en el motor: reanudar sigue desde ese punto.
+function terminarEsperaTraduccion() {
+  estado.esperandoTraduccion = false;
+  $('reproducir').dataset.espera = 'no';
+}
+
 function pausar() {
   estado.sonando = false;
+  if (estado.esperandoTraduccion) {
+    // Aún no empezó a sonar: al reanudar, la oración se lee desde el principio.
+    terminarEsperaTraduccion();
+    estado.turno++;
+    pintarBotonReproducir();
+    pintarEstado();
+    return;
+  }
   estado.pausado = true;
   motor?.pausar();
   pintarBotonReproducir();
@@ -391,6 +426,7 @@ function detener() {
   estado.sonando = false;
   estado.pausado = false;
   estado.turno++;
+  terminarEsperaTraduccion();
   dispositivo?.detener();
   neuronal.detener();
   pintarBotonReproducir();
@@ -401,6 +437,7 @@ function irA(i) {
   const seguia = estado.sonando;
   estado.pausado = false;
   estado.turno++;
+  terminarEsperaTraduccion();
   motor?.detener();
   estado.idx = i;
   visor.retomarSeguimiento();
@@ -558,9 +595,160 @@ async function probarVoz() {
   }
 }
 
+/* ---------- Traducción ---------- */
+
+const traduccion = { motor: null, turno: 0, espera: new Map(), fallo: false };
+
+function faltaTraducir(o) {
+  return estado.traducir && !traduccion.fallo && o.idioma === 'en' && !o.referencia && o.traduccion == null;
+}
+
+function esperarTraduccion(o) {
+  if (!faltaTraducir(o)) return Promise.resolve();
+  return new Promise((resolve) => {
+    if (!traduccion.espera.has(o.i)) traduccion.espera.set(o.i, []);
+    traduccion.espera.get(o.i).push(resolve);
+  });
+}
+
+function liberarEsperas(i = null) {
+  if (i !== null) {
+    for (const r of traduccion.espera.get(i) ?? []) r();
+    traduccion.espera.delete(i);
+    return;
+  }
+  for (const lista of traduccion.espera.values()) for (const r of lista) r();
+  traduccion.espera.clear();
+}
+
+// Sigue a la lectura: traduce primero lo que viene y después lo que quedó atrás.
+function siguientePendiente() {
+  const { oraciones, idx } = estado;
+  for (let i = idx; i < oraciones.length; i++) if (faltaTraducir(oraciones[i])) return oraciones[i];
+  for (let i = 0; i < idx; i++) if (faltaTraducir(oraciones[i])) return oraciones[i];
+  return null;
+}
+
+function mostrarTraduccion(o) {
+  o.voz = null;
+  if (o.nodo) {
+    o.nodo.textContent = textoMostrado(o);
+    o.nodo.title = estado.traducir && o.traduccion ? `Original: ${o.texto}` : '';
+  }
+}
+
+async function arrancarTraduccion() {
+  const turno = ++traduccion.turno;
+  traduccion.fallo = false;
+  liberarEsperasDeOtroDocumento();
+  const total = estado.oraciones.filter(faltaTraducir).length;
+  if (!total) return;
+
+  const nodo = aviso('Preparando el traductor…', [{
+    texto: 'Leer sin traducir',
+    alPulsar: () => {
+      $('traducir').checked = false;
+      cambiarTraduccion(false);
+    },
+  }], { conProgreso: true });
+  const rotulo = nodo.querySelector('p');
+  const barra = nodo.querySelector('progress');
+  const motor = new Traductor({
+    alProgreso: (hecho, peso) => {
+      if (turno !== traduccion.turno) return;
+      rotulo.textContent = `Descargando el traductor: ${Math.round(hecho / 1e6)} de ${Math.round(peso / 1e6)} MB. Solo ocurre una vez.`;
+      barra.value = peso ? hecho / peso : 0;
+    },
+  });
+  traduccion.motor = motor;
+  try {
+    await motor.preparar();
+    let hechas = 0;
+    for (;;) {
+      if (turno !== traduccion.turno) return;
+      const o = siguientePendiente();
+      if (!o) break;
+      if (hechas % 5 === 0) {
+        rotulo.textContent = `Traduciendo al español: ${hechas} de ${total} oraciones. Ya puedes escuchar.`;
+        barra.value = hechas / total;
+      }
+      let texto;
+      try {
+        texto = await motor.traducir(o.texto);
+      } catch (e) {
+        if (turno !== traduccion.turno) return;
+        if (!motor.worker) throw e;
+        texto = o.texto; // una oración problemática se lee tal cual y no detiene el libro
+      }
+      if (turno !== traduccion.turno) return;
+      o.traduccion = texto;
+      mostrarTraduccion(o);
+      liberarEsperas(o.i);
+      hechas++;
+    }
+    nodo.remove();
+  } catch (e) {
+    if (turno !== traduccion.turno) return;
+    traduccion.fallo = true;
+    nodo.remove();
+    aviso(`No se pudo traducir: ${e.message} El documento se leerá en su idioma original.`);
+    liberarEsperas();
+  } finally {
+    motor.cerrar();
+    if (traduccion.motor === motor) traduccion.motor = null;
+  }
+}
+
+function liberarEsperasDeOtroDocumento() {
+  traduccion.motor?.cerrar();
+  traduccion.motor = null;
+  liberarEsperas();
+}
+
+function cambiarTraduccion(activa) {
+  estado.traducir = activa;
+  guardar('traducir', String(activa));
+  detener();
+  neuronal.vaciar();
+  if (activa) {
+    for (const o of estado.oraciones) mostrarTraduccion(o);
+    if (estado.oraciones.length) arrancarTraduccion();
+    return;
+  }
+  traduccion.turno++;
+  liberarEsperasDeOtroDocumento();
+  for (const n of $('avisos').querySelectorAll('.aviso')) if (n.querySelector('progress')) n.remove();
+  for (const o of estado.oraciones) mostrarTraduccion(o);
+}
+
+/* ---------- Pantalla encendida ---------- */
+
+// Si el celular apaga la pantalla, el navegador detiene la lectura a mitad del libro.
+const vigilia = { bloqueo: null, pidiendo: false };
+
+async function actualizarVigilia() {
+  const hacePantalla = estado.sonando || Boolean(descarga.trabajo);
+  if (!hacePantalla) {
+    vigilia.bloqueo?.release().catch(() => {});
+    vigilia.bloqueo = null;
+    return;
+  }
+  if (vigilia.bloqueo || vigilia.pidiendo || !navigator.wakeLock || document.visibilityState !== 'visible') return;
+  vigilia.pidiendo = true;
+  try {
+    vigilia.bloqueo = await navigator.wakeLock.request('screen');
+    vigilia.bloqueo.addEventListener('release', () => {
+      vigilia.bloqueo = null;
+    });
+  } catch { /* sin permiso o sin batería: la lectura sigue igual */ }
+  vigilia.pidiendo = false;
+}
+
+document.addEventListener('visibilitychange', actualizarVigilia);
+
 /* ---------- Descargar audio ---------- */
 
-const descarga = { trabajo: null, url: null, vigilia: null };
+const descarga = { trabajo: null, url: null };
 
 function panelDescarga(cual) {
   for (const p of ['opciones', 'proceso', 'lista']) $(`descarga-${p}`).hidden = p !== cual;
@@ -619,10 +807,28 @@ function abrirDescarga() {
   pintarResumenDescarga();
 }
 
+// Espera a que estén traducidas las oraciones del rango. Devuelve false si se canceló.
+async function traducirRango(desde, hasta) {
+  const faltan = estado.oraciones.filter((o) => o.pagina + 1 >= desde && o.pagina + 1 <= hasta && !omitida(o) && faltaTraducir(o));
+  if (!faltan.length) return true;
+  let hechas = 0;
+  const pintar = () => {
+    $('descarga-estado').textContent = `Traduciendo al español: ${hechas} de ${faltan.length} oraciones.`;
+    $('descarga-barra').value = hechas / faltan.length;
+  };
+  pintar();
+  return new Promise((resolve) => {
+    descarga.trabajo = { cancelar: () => resolve(false), detenerYGuardar: () => {}, hayAudio: false };
+    Promise.all(faltan.map((o) => esperarTraduccion(o).then(() => {
+      hechas++;
+      pintar();
+    }))).then(() => resolve(true));
+  });
+}
+
 async function generarMp3() {
   const v = VOCES_NEURONALES.find((x) => x.id === $('descarga-voz').value);
-  const plan = planDescarga();
-  if (!plan.textos.length) return;
+  if (!planDescarga().textos.length) return;
   const { desde, hasta, total } = limitesDescarga();
   guardar('vozDescarga', v.id);
   detener();
@@ -632,9 +838,16 @@ async function generarMp3() {
   $('descarga-barra').value = 0;
   $('descarga-parcial').disabled = true;
 
-  try {
-    descarga.vigilia = await navigator.wakeLock?.request('screen');
-  } catch { /* sin bloqueo de pantalla: la generación sigue igual */ }
+  const traducido = await traducirRango(desde, hasta);
+  descarga.trabajo = null;
+  if (!traducido) {
+    panelDescarga('opciones');
+    pintarResumenDescarga();
+    return;
+  }
+  const plan = planDescarga();
+  $('descarga-estado').textContent = 'Preparando la voz…';
+  $('descarga-barra').value = 0;
 
   const trabajo = new ExportacionMp3({ voz: v, textos: plan.textos, velocidad: estado.velocidad }, {
     alDescargar: (hecho, totalBytes) => {
@@ -654,6 +867,7 @@ async function generarMp3() {
     },
   });
   descarga.trabajo = trabajo;
+  actualizarVigilia();
 
   let resultado = null;
   let error = null;
@@ -663,8 +877,7 @@ async function generarMp3() {
     error = e;
   }
   descarga.trabajo = null;
-  descarga.vigilia?.release().catch(() => {});
-  descarga.vigilia = null;
+  actualizarVigilia();
 
   if (error) {
     panelDescarga('opciones');
@@ -873,6 +1086,8 @@ $('voz-borrar').addEventListener('click', async () => {
 });
 $('voz-probar').addEventListener('click', probarVoz);
 
+$('traducir').checked = estado.traducir;
+$('traducir').addEventListener('change', (e) => cambiarTraduccion(e.target.checked));
 $('omitir-referencias').checked = estado.omitirReferencias;
 $('omitir-citas').checked = estado.omitirCitas;
 $('omitir-referencias').addEventListener('change', (e) => {

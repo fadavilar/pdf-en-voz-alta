@@ -58,7 +58,7 @@
       <button type="button" class="boton-suave" data-instalar hidden>Instalar app</button>
     </div>
     <h1 class="titular"><span class="titular-marca">Abre un PDF y escúchalo en español.</span></h1>
-    <p class="entrada">Cada oración se resalta mientras suena. Las columnas de los artículos se leen en orden, y puedes saltarte citas y referencias.</p>
+    <p class="entrada">Si está en inglés, lo traduce al español. Cada oración se resalta mientras suena, y las columnas de los artículos se leen en orden.</p>
     <div class="zona-carga" id="zona-carga">
       <p class="zona-texto">Arrastra el archivo hasta aquí</p>
       <div class="zona-acciones">
@@ -135,6 +135,7 @@
 
     <section>
       <h3>Qué se lee</h3>
+      <label class="casilla"><input type="checkbox" id="traducir" checked> Traducir al español lo que esté en inglés</label>
       <label class="casilla"><input type="checkbox" id="omitir-referencias" checked> Saltar la lista de referencias</label>
       <label class="casilla"><input type="checkbox" id="omitir-citas" checked> Saltar citas dentro del texto, como [3] o (Pérez, 2020)</label>
       <p class="nota">Los encabezados, pies y números de página no se leen nunca. Lo que quedó fuera sigue visible en el texto: púlsalo si quieres oírlo.</p>
@@ -169,7 +170,8 @@
         <a href="https://github.com/microsoft/onnxruntime" rel="noopener" target="_blank">ONNX Runtime Web</a> (MIT),
         <a href="https://github.com/diffusion-studio/piper-wasm" rel="noopener" target="_blank">piper-wasm</a> con
         <a href="https://github.com/espeak-ng/espeak-ng" rel="noopener" target="_blank">eSpeak NG</a> (GPL-3.0),
-        <a href="https://github.com/arseneyr/wasm-media-encoders" rel="noopener" target="_blank">wasm-media-encoders</a> (MIT) con el codificador LAME (LGPL) y las
+        <a href="https://github.com/arseneyr/wasm-media-encoders" rel="noopener" target="_blank">wasm-media-encoders</a> (MIT) con el codificador LAME (LGPL),
+        <a href="https://github.com/mozilla/translations" rel="noopener" target="_blank">Bergamot y los modelos de Firefox Translations</a> (MPL-2.0) para traducir, y las
         <a href="https://huggingface.co/rhasspy/piper-voices" rel="noopener" target="_blank">voces de Piper</a>:
         Ald (Unlicense), Claude (Apache-2.0; voz de HirCoir, sin relación con Anthropic), Davefx (CC0) y Daniela (CC BY-SA 4.0, de larcanio).
         Tipografías Literata y Atkinson Hyperlegible (OFL).</p>
@@ -240,6 +242,6 @@
   <div class="soltar" id="soltar" hidden>Suelta el PDF para abrirlo</div>
   <input type="file" id="archivo" accept="application/pdf,.pdf" hidden>
   <audio id="audio" preload="auto"></audio>
-  <script type="module" src="js/app.js?v=20261103b"></script>
+  <script type="module" src="js/app.js?v=20261104a"></script>
 </body>
 </html>

@@ -13,6 +13,8 @@ let configuracion = null;
 let vozActual = null;
 let fonemasWasm = null;
 let fonemasDatos = null;
+let moduloFonemas = null;
+let capturarFonemas = null;
 
 // Descarga una sola vez: lo guardado en la Cache API no vuelve a la red.
 async function traer(url, alProgreso) {
@@ -81,24 +83,32 @@ async function preparar(voz) {
   vozActual = voz.ruta;
 }
 
-function fonemizar(texto) {
-  return new Promise((resolve, reject) => {
-    let listo = false;
-    createPiperPhonemize({
+// Un solo módulo para todo el documento: crear uno por oración copia 18 MB cada vez
+// y en un libro largo puede agotar la memoria del celular.
+async function fonemizar(texto) {
+  const args = ['-l', configuracion.espeak.voice, '--input', JSON.stringify([{ text: texto }]), '--espeak_data', '/espeak-ng-data'];
+  for (let intento = 0; intento < 2; intento++) {
+    moduloFonemas ??= await createPiperPhonemize({
+      noExitRuntime: true,
       wasmBinary: fonemasWasm,
       getPreloadedPackage: () => fonemasDatos.slice(0),
-      print: (salida) => {
-        listo = true;
-        resolve(JSON.parse(salida).phoneme_ids);
-      },
-      printErr: (mensaje) => {
-        if (!listo) reject(new Error(mensaje));
-      },
+      print: (salida) => capturarFonemas?.(salida),
+      printErr: () => {},
       locateFile: (archivo) => `${FONEMAS_BASE}${archivo}`,
-    }).then((modulo) => {
-      modulo.callMain(['-l', configuracion.espeak.voice, '--input', JSON.stringify([{ text: texto }]), '--espeak_data', '/espeak-ng-data']);
-    }, reject);
-  });
+    });
+    let ids = null;
+    capturarFonemas = (salida) => {
+      ids = JSON.parse(salida).phoneme_ids;
+    };
+    try {
+      moduloFonemas.callMain(args);
+    } catch {
+      // El programa puede avisar su salida con una excepción; lo que importa es si dejó fonemas.
+    }
+    if (ids) return ids;
+    moduloFonemas = null;
+  }
+  throw new Error('No se pudieron generar los fonemas de esta oración.');
 }
 
 function aWav(pcm, frecuencia, silencio) {

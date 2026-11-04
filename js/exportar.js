@@ -1,6 +1,6 @@
 // Genera el documento completo como un MP3 en un worker propio, sin tocar la lectura en curso.
 
-const WORKER = 'js/piper-worker.js?v=20261103b';
+const WORKER = 'js/piper-worker.js?v=20261104a';
 const BYTES_POR_SEGUNDO = 8000; // 64 kbit/s
 const CARACTERES_POR_SEGUNDO = 14;
 const SILENCIO = 0.28;

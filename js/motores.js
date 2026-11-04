@@ -165,7 +165,7 @@ export class MotorNeuronal {
   async preparar(voz) {
     if (this.vozLista === voz.id) return;
     if (!this.worker) {
-      this.worker = new Worker('js/piper-worker.js?v=20261103b');
+      this.worker = new Worker('js/piper-worker.js?v=20261104a');
       this.worker.onmessage = (e) => this.#mensaje(e);
       this.worker.onerror = (e) => {
         const error = new Error(e.message || 'El motor de voz neuronal no pudo iniciar.');
