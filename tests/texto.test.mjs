@@ -193,3 +193,17 @@ test('reconoce el idioma de cada bloque y hereda en los títulos cortos', () => 
   assert.equal(oraciones.find((o) => o.texto.startsWith('This')).idioma, 'en');
   assert.equal(oraciones.find((o) => o.texto === 'Introduction').idioma, 'en');
 });
+
+test('reconoce el inglés aun en oraciones cortas de un documento breve', () => {
+  assert.equal(idiomaDeTexto('Health economics studies how scarce resources are allocated to improve health.'), 'en');
+  assert.equal(idiomaDeTexto('La economía de la salud estudia los recursos escasos.'), 'es');
+  assert.equal(idiomaDeTexto('Costos directos'), null);
+  const items = [
+    caja('Health economics studies how scarce resources are allocated to improve health.', 60, 100, 450),
+    caja('Patients received the new treatment and the results of the trial were good.', 60, 140, 450),
+    caja('Methods', 60, 180, 80),
+  ];
+  const { oraciones, idioma } = construirDocumento([{ W: 600, H: 800, items }]);
+  assert.equal(idioma, 'en');
+  assert.deepEqual(oraciones.map((o) => o.idioma), ['en', 'en', 'en']);
+});

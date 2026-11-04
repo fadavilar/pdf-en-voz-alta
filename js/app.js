@@ -1,5 +1,5 @@
 import * as pdfjs from '../vendor/pdfjs/pdf.min.mjs';
-import { itemsDesdePdf, construirDocumento } from './extraccion.js?v=20261104a';
+import { itemsDesdePdf, construirDocumento } from './extraccion.js?v=20261104b';
 import { paraVoz } from './pronunciacion.js';
 import { Visor } from './visor.js';
 import { Pulso } from './pulso.js';

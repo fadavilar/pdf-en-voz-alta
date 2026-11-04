@@ -379,24 +379,25 @@ function rectangulos(bloque, ini, fin, paginas) {
   return rects;
 }
 
-const PALABRAS_ES = new Set('el la los las de del y en que para por con una un se su al es como más o lo este esta son entre sobre también'.split(' '));
-const PALABRAS_EN = new Set('the of and to in that for with is on as are this was by from at an be which were these have has'.split(' '));
+const PALABRAS_ES = new Set('el la los las de del y en que para por con una un se su sus al es como más o lo este esta estos estas son entre sobre también fue fueron ha han pero cuando si sin desde está están muy cada ya hay porque según ser tiene donde otros otras'.split(' '));
+const PALABRAS_EN = new Set('the of and to in that for with is on as are this was by from at an be which were these have has how not but their they it its can may we our will would should than when after between each all who there been had also such into about more most other some only'.split(' '));
 
 // Idioma de un fragmento, o null si es muy corto para saberlo (un título, por ejemplo).
-export function idiomaDeTexto(texto, minimo = 3) {
+export function idiomaDeTexto(texto, minimo = 2) {
   let es = (texto.match(/[áéíóúñ¿¡]/gi) ?? []).length;
   let en = 0;
   for (const palabra of texto.toLowerCase().match(/\p{L}+/gu) ?? []) {
     if (PALABRAS_ES.has(palabra)) es++;
     if (PALABRAS_EN.has(palabra)) en++;
   }
+  if (es > 0 && en === 0 && /[áéíóúñ¿¡]/i.test(texto)) return 'es'; // el inglés casi nunca lleva estos signos
   if (es + en < minimo) return null;
   if (en > es * 1.3) return 'en';
   return es > en ? 'es' : null;
 }
 
 export function detectarIdioma(texto) {
-  return idiomaDeTexto(texto, 20) ?? 'es';
+  return idiomaDeTexto(texto, 5) ?? 'es';
 }
 
 // Devuelve { oraciones, bloques, idioma }.
