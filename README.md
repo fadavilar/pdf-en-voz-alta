@@ -8,6 +8,7 @@ Abre un PDF y escúchalo en español, directamente en el navegador. El archivo n
 
 - Lee artículos a varias columnas en el orden correcto y une las palabras partidas por un guion al final de la línea.
 - Resalta cada oración en la página y en el panel de texto. Pulsa cualquier frase para seguir desde allí.
+- Salta tablas, fórmulas, textos de figuras y notas al pie, que pierden sentido en voz alta. Quedan atenuados en el panel de texto: púlsalos para oírlos, o desactiva la opción en Ajustes.
 - Deja fuera encabezados, pies y números de página. Por defecto salta las referencias y las citas, y ambas opciones se cambian en Ajustes.
 - Lee las cifras y abreviaturas como lo haría una persona: «IC 95 %» se oye «intervalo de confianza del 95 por ciento».
 - Reconoce el texto de los PDF escaneados con OCR.
@@ -47,8 +48,7 @@ Se descartaron [kokoro-js](https://github.com/hexgrad/kokoro/tree/main/kokoro.js
 
 ## Límites conocidos
 
-- Las tablas se leen columna por columna, y las fórmulas no se interpretan. Pulsa la oración siguiente para saltarlas.
-- Las notas al pie se leen donde aparecen.
+- La detección de tablas, fórmulas y notas se basa en la forma del texto y puede fallar: una tabla sin columnas claras puede leerse, y una lista de frases muy cortas puede saltarse. Una fórmula dentro de una oración se lee con la oración.
 - La traducción automática puede tener errores, sobre todo en terminología especializada. El panel de texto muestra el original al pasar el cursor sobre cada frase.
 - El OCR puede cometer errores de lectura.
 

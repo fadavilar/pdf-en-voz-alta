@@ -239,3 +239,108 @@ test('el audio que mantiene la sesión es un WAV válido y en silencio', () => {
   assert.equal(v.getUint32(40, true), buffer.byteLength - 44);
   assert.ok(new Uint8Array(buffer, 44).every((b) => b === 0));
 });
+
+const elementosDe = (items) => construirDocumento([{ W: 600, H: 800, items }]).oraciones.map((o) => [o.texto, o.elemento]);
+const prosa = (y, texto = 'Este es un párrafo normal del artículo que describe los resultados del estudio.') => caja(texto, 60, y, 460);
+
+test('salta una tabla y lee la prosa que la rodea', () => {
+  const items = [prosa(100)];
+  ['Grupo', 'Costo', 'Efecto'].forEach((t, c) => items.push(caja(t, 60 + c * 170, 140, 60)));
+  [['Control', '120', '0,5'], ['Tratado', '240', '0,8'], ['Total', '360', '1,3']].forEach((fila, f) => {
+    fila.forEach((t, c) => items.push(caja(t, 60 + c * 170, 156 + f * 16, 60)));
+  });
+  items.push(prosa(240, 'Este otro párrafo sigue después de la tabla y también se tiene que leer.'));
+  const r = elementosDe(items);
+  assert.equal(r.filter(([, e]) => e === null).length, 2);
+  assert.ok(r.some(([t, e]) => e === 'tabla' && t.includes('Costo')));
+  assert.equal(r.find(([t]) => t.startsWith('Este otro'))[1], null);
+});
+
+test('una tabla en una columna no afecta la prosa de la otra', () => {
+  const items = [];
+  for (let f = 0; f < 6; f++) {
+    items.push(caja('Prosa de la columna izquierda que ocupa todo su ancho', 40, 100 + f * 14, 250));
+    ['A', '10', '20'].forEach((t, c) => items.push(caja(t, 320 + c * 80, 100 + f * 14, 20)));
+  }
+  const r = elementosDe(items);
+  assert.ok(r.some(([t, e]) => e === null && t.includes('Prosa de la columna')));
+  assert.ok(r.some(([t, e]) => e === 'tabla' && t.includes('10')));
+  assert.ok(!r.some(([t, e]) => e === 'tabla' && t.includes('Prosa')));
+});
+
+test('dos columnas de prosa no se confunden con una tabla', () => {
+  const items = [];
+  for (let f = 0; f < 8; f++) {
+    items.push(caja('Texto normal de la izquierda con frases largas', 40, 100 + f * 14, 250));
+    items.push(caja('Texto normal de la derecha con frases largas', 320, 100 + f * 14, 250));
+  }
+  assert.ok(elementosDe(items).every(([, e]) => e === null));
+});
+
+test('reconoce pies de tabla y figura, sin confundirlos con prosa que los menciona', () => {
+  const r = elementosDe([
+    prosa(60),
+    caja('Tabla 1. Características de los pacientes', 60, 100, 300),
+    caja('Figure 2: Flow diagram of the included studies', 60, 140, 300),
+    caja('Fuente: elaboración propia con datos del ministerio', 60, 180, 300),
+    caja('Figure 2 shows that the effect was larger in the treated group of patients.', 60, 220, 460),
+    caja('La tabla 3 resume los resultados principales del análisis de sensibilidad.', 60, 260, 460),
+  ]);
+  const de = (inicio) => r.find(([t]) => t.startsWith(inicio))[1];
+  assert.equal(de('Tabla 1'), 'leyenda');
+  assert.equal(de('Figure 2:'), 'leyenda');
+  assert.equal(de('Fuente'), 'nota');
+  assert.equal(de('Figure 2 shows'), null);
+  assert.equal(de('La tabla 3'), null);
+});
+
+test('reconoce fórmulas y deja las frases con alguna cifra', () => {
+  const r = elementosDe([
+    prosa(60),
+    caja('ICER = (C1 - C0) / (E1 - E0)', 60, 100, 200),
+    caja('x = ∑ βi yi + ε', 60, 140, 200),
+    caja('(3)', 60, 180, 30),
+    caja('El costo fue de 120 pesos y el efecto de 0,5 años de vida ganados.', 60, 220, 460),
+    caja('Se observó p = 0,03 en el grupo tratado, lo que confirma el resultado esperado del estudio.', 60, 260, 500),
+  ]);
+  const de = (inicio) => r.find(([t]) => t.startsWith(inicio))[1];
+  assert.equal(de('ICER'), 'formula');
+  assert.equal(de('x ='), 'formula');
+  assert.equal(de('(3)'), 'tabla');
+  assert.equal(de('El costo'), null);
+  assert.equal(de('Se observó'), null);
+});
+
+test('salta la letra pequeña al pie y los rótulos sueltos de un gráfico', () => {
+  const items = [prosa(100)];
+  for (let i = 0; i < 6; i++) items.push(caja(`Rótulo ${i}`, 60 + i * 20, 160 + i * 30, 60));
+  items.push(caja('1 Investigador del instituto de salud pública de la universidad.', 60, 700, 400, 7));
+  const r = elementosDe(items);
+  assert.equal(r.find(([t]) => t.startsWith('Rótulo'))[1], 'figura');
+  assert.equal(r.find(([t]) => t.startsWith('1 Investigador'))[1], 'nota');
+  assert.equal(r[0][1], null);
+});
+
+test('una oración sigue de corrido aunque haya una leyenda en medio', () => {
+  const r = elementosDe([
+    caja('Esta oración empieza antes de la leyenda', 60, 100, 300),
+    caja('Tabla 2. Costos por grupo', 60, 140, 300),
+    caja('y termina después de ella.', 60, 180, 300),
+  ]);
+  assert.deepEqual(r.map(([t]) => t), ['Esta oración empieza antes de la leyenda y termina después de ella.', 'Tabla 2.', 'Costos por grupo']);
+});
+
+test('salta una ecuación pegada a su párrafo y un rótulo junto a una tabla', () => {
+  const r = elementosDe([
+    caja('El indicador se calcula con la fórmula habitual del análisis económico.', 60, 100, 460),
+    caja('ICER = (C1 - C0) / (E1 - E0)', 60, 112, 200),
+    prosa(180),
+    caja('Costo', 60, 240, 40),
+    caja('500', 60, 280, 20),
+  ]);
+  const de = (inicio) => r.find(([t]) => t.startsWith(inicio))[1];
+  assert.equal(de('El indicador'), null);
+  assert.equal(de('ICER'), 'formula');
+  assert.equal(de('Costo'), 'figura');
+  assert.equal(de('500'), 'tabla');
+});

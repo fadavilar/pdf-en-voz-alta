@@ -1,5 +1,5 @@
 import * as pdfjs from '../vendor/pdfjs/pdf.min.mjs';
-import { itemsDesdePdf, construirDocumento } from './extraccion.js?v=20261104b';
+import { itemsDesdePdf, construirDocumento } from './extraccion.js?v=20261106c';
 import { paraVoz } from './pronunciacion.js?v=20261106a';
 import { Visor } from './visor.js';
 import { Pulso } from './pulso.js';
@@ -21,6 +21,7 @@ const FRASE_PRUEBA = 'Esta es la voz que leerá tu documento. Puedes cambiarla c
 const FRASE_PRUEBA_INGLES = 'This is the voice that will read the English parts of your document.';
 const MIN_CARACTERES_PAGINA = 20;
 const ORACIONES_POR_ADELANTADO = 8;
+const NOMBRE_ELEMENTO = { tabla: 'una tabla', formula: 'una fórmula', leyenda: 'un pie de tabla o figura', nota: 'una nota', figura: 'un texto de figura' };
 // En el celular, solo las voces neuronales siguen sonando con la pantalla bloqueada.
 const ES_MOVIL = plataforma(navigator.userAgent, navigator.maxTouchPoints) !== 'otro';
 
@@ -44,6 +45,7 @@ const estado = {
   velocidad: Number(leer('velocidad')) || 1,
   omitirReferencias: leer('omitirReferencias') !== 'false',
   omitirCitas: leer('omitirCitas') !== 'false',
+  omitirElementos: leer('omitirElementos') !== 'false',
   traducir: leer('traducir') !== 'false',
   esperandoTraduccion: false,
   vozElegida: leer('voz') ?? '',
@@ -249,6 +251,7 @@ function pintarTexto() {
     s.className = `oracion${omitida(o) ? ' omitida' : ''}`;
     s.dataset.i = o.i;
     s.textContent = textoMostrado(o);
+    if (o.elemento) s.title = `Se salta porque es ${NOMBRE_ELEMENTO[o.elemento]}. Púlsala para oírla.`;
     contenedor.append(s, ' ');
     o.nodo = s;
   }
@@ -262,7 +265,7 @@ function pintarTexto() {
 
 /* ---------- Lectura ---------- */
 
-const omitida = (o) => estado.omitirReferencias && o.referencia;
+const omitida = (o) => (estado.omitirReferencias && o.referencia) || (estado.omitirElementos && Boolean(o.elemento));
 
 function textoMostrado(o) {
   return estado.traducir && o.traduccion ? o.traduccion : o.texto;
@@ -728,7 +731,7 @@ async function probarVoz(idioma) {
 const traduccion = { motor: null, turno: 0, espera: new Map(), fallo: false };
 
 function faltaTraducir(o) {
-  return estado.traducir && !traduccion.fallo && o.idioma === 'en' && !o.referencia && o.traduccion == null;
+  return estado.traducir && !traduccion.fallo && o.idioma === 'en' && !o.referencia && !(estado.omitirElementos && o.elemento) && o.traduccion == null;
 }
 
 function esperarTraduccion(o) {
@@ -831,7 +834,7 @@ function liberarEsperasDeOtroDocumento() {
   liberarEsperas();
 }
 
-const hayIngles = () => estado.oraciones.some((o) => o.idioma === 'en' && !o.referencia);
+const hayIngles = () => estado.oraciones.some((o) => o.idioma === 'en' && !o.referencia && !o.elemento);
 
 function pintarIdioma() {
   $('control-idioma').hidden = !hayIngles();
@@ -1276,13 +1279,23 @@ $('traducir').checked = estado.traducir;
 $('traducir').addEventListener('change', (e) => cambiarTraduccion(e.target.checked));
 $('omitir-referencias').checked = estado.omitirReferencias;
 $('omitir-citas').checked = estado.omitirCitas;
-$('omitir-referencias').addEventListener('change', (e) => {
-  estado.omitirReferencias = e.target.checked;
-  guardar('omitirReferencias', String(e.target.checked));
+function repintarOmitidas() {
   for (const o of estado.oraciones) o.nodo?.classList.toggle('omitida', omitida(o));
   pulso.usar(estado.oraciones, omitida);
   pulso.mover(estado.idx);
   pintarEstado();
+}
+$('omitir-referencias').addEventListener('change', (e) => {
+  estado.omitirReferencias = e.target.checked;
+  guardar('omitirReferencias', String(e.target.checked));
+  repintarOmitidas();
+});
+$('omitir-elementos').checked = estado.omitirElementos;
+$('omitir-elementos').addEventListener('change', (e) => {
+  estado.omitirElementos = e.target.checked;
+  guardar('omitirElementos', String(e.target.checked));
+  repintarOmitidas();
+  if (estado.oraciones.length) arrancarTraduccion(); // lo que vuelve a leerse también se traduce
 });
 $('omitir-citas').addEventListener('change', (e) => {
   estado.omitirCitas = e.target.checked;

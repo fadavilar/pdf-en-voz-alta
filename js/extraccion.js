@@ -236,6 +236,9 @@ function armarBloque(cajas, numPagina, alturaGlobal) {
     bloque.texto = unirFinDeLinea(bloque.texto, bloque.tramos);
   }
   bloque.texto = bloque.texto.replace(/\s+$/, '');
+  bloque.top = Math.min(...cajas.map((c) => c.top));
+  bloque.x0 = Math.min(...cajas.map((c) => c.x));
+  bloque.x1 = Math.max(...cajas.map((c) => c.x + c.w));
 
   const corto = bloque.texto.length <= 140 && !/[.!?:;,]$/.test(bloque.texto);
   const letras = bloque.texto.replace(/[^\p{L}]/gu, '');
@@ -279,8 +282,13 @@ function resolverPartidas(bloque) {
 
 function fusionarContinuaciones(bloques) {
   const salida = [];
+  let previo = null;
   for (const b of bloques) {
-    const previo = salida.at(-1);
+    // Una tabla entre dos columnas no corta la oración que sigue al otro lado.
+    if (b.elemento) {
+      salida.push(b);
+      continue;
+    }
     // Un título que ocupa dos líneas sigue siendo un solo título.
     const mismoTitulo = previo && previo.rol === 'titulo' && b.rol === 'titulo' && previo.pagina === b.pagina
       && Math.abs(previo.alto - b.alto) < previo.alto * 0.05 && !/^\d+(\.\d+)*\.?\s/.test(b.texto);
@@ -289,6 +297,7 @@ function fusionarContinuaciones(bloques) {
       && /^\p{Ll}/u.test(b.texto);
     if (!sigue) {
       salida.push(b);
+      previo = b;
       continue;
     }
     const partida = /\u0000$/.test(previo.texto);
@@ -400,6 +409,144 @@ export function detectarIdioma(texto) {
   return idiomaDeTexto(texto, 5) ?? 'es';
 }
 
+const SOLO_CIFRAS = /^[\d\s.,;:%()[\]±<>=+\-–—/*†‡≤≥]+$/;
+
+// Tablas: filas seguidas con varias celdas cortas en columnas alineadas.
+// Lo ancho de la misma fila es prosa de otra columna de la página y no se toca.
+function separarTablas(cajas, ctx) {
+  if (cajas.length < 6) return { cuerpo: cajas, tablas: [] };
+  const x0 = Math.min(...cajas.map((c) => c.x));
+  const x1 = Math.max(...cajas.map((c) => c.x + c.w));
+  const ancho = x1 - x0;
+  const filas = agruparEnLineas(cajas).sort((a, b) => a.top - b.top).map((fila) => {
+    const segmentos = [];
+    for (const c of fila.cajas) {
+      const ultimo = segmentos.at(-1);
+      if (ultimo && c.x - ultimo.fin < ctx.alto) {
+        ultimo.cajas.push(c);
+        ultimo.fin = Math.max(ultimo.fin, c.x + c.w);
+        ultimo.texto += ` ${c.str}`;
+      } else {
+        segmentos.push({ cajas: [c], ini: c.x, fin: c.x + c.w, texto: c.str });
+      }
+    }
+    const cortos = segmentos.filter((s) => s.fin - s.ini < ancho * 0.28);
+    const cifras = cortos.filter((s) => SOLO_CIFRAS.test(s.texto.trim())).length;
+    return { ...fila, segmentos, cortos, tabular: cortos.length >= 3 || (cortos.length >= 2 && cifras >= 1) };
+  });
+
+  const alineada = (grupo) => {
+    const conteo = new Map();
+    for (const fila of grupo) {
+      const vistos = new Set();
+      for (const s of fila.cortos) {
+        for (const punto of [s.ini, s.fin, (s.ini + s.fin) / 2]) vistos.add(Math.round(punto / (ctx.W * 0.012)));
+      }
+      for (const v of vistos) conteo.set(v, (conteo.get(v) ?? 0) + 1);
+    }
+    const fuertes = [...conteo].filter(([, n]) => n >= grupo.length * 0.6).map(([v]) => v).sort((a, b) => a - b);
+    let columnas = 0;
+    let ultima = -Infinity;
+    for (const v of fuertes) {
+      if ((v - ultima) * 0.012 > 0.05) columnas++;
+      ultima = v;
+    }
+    return columnas >= 2;
+  };
+
+  const tramos = [];
+  let actual = null;
+  const cerrar = () => {
+    if (!actual) return;
+    while (actual.filas.length && !actual.filas.at(-1).tabular) actual.filas.pop();
+    const tabulares = actual.filas.filter((f) => f.tabular);
+    if (tabulares.length >= 3 && alineada(tabulares)) tramos.push(actual.filas);
+    actual = null;
+  };
+  for (const fila of filas) {
+    const cerca = actual && fila.top - actual.filas.at(-1).bottom <= ctx.alto * 2.5;
+    if (fila.tabular) {
+      if (!cerca) {
+        cerrar();
+        actual = { filas: [], holgura: 0 };
+      }
+      actual.filas.push(fila);
+      actual.holgura = 0;
+    } else if (cerca && actual.holgura < 1 && fila.cortos.length === fila.segmentos.length) {
+      actual.filas.push(fila); // encabezado de grupo o celda sola dentro de la tabla
+      actual.holgura++;
+    } else {
+      cerrar();
+    }
+  }
+  cerrar();
+
+  const enTabla = new Set();
+  const tablas = tramos.map((grupo) => {
+    const propias = grupo.flatMap((f) => f.segmentos.filter((s) => s.fin - s.ini < ancho * 0.42).flatMap((s) => s.cajas));
+    propias.forEach((c) => enTabla.add(c));
+    return propias;
+  });
+  return { cuerpo: cajas.filter((c) => !enTabla.has(c)), tablas };
+}
+
+const LEYENDA = /^(?:tabla|table|cuadro|figura|figure|figs?\.?|gr[aá]fico|gr[aá]fica|graph|ilustraci[oó]n|esquema|scheme|chart|box|recuadro|imagen|image|mapa|map)\s*(?:s?\d+[a-z]?|[ivxlc]+)\b\s*(.*)$/isu;
+const NOTA = /^(?:fuentes?|sources?|notas?|notes?|abreviaturas?|abbreviations?|leyenda|legend|elaboraci[oó]n propia)\b\s*[:.]/iu;
+const SIMBOLOS = /[=≈≠≡≤≥∑∏∫√∂∇±×÷→←↔∞∈∉⊂∪∩∝∼\u0391-\u03A9\u03B1-\u03C9]/gu;
+
+// Un «Figure 2 shows that…» es prosa; un «Figure 2. Flujo de pacientes» es un pie de figura.
+function esLeyenda(texto) {
+  const m = texto.match(LEYENDA);
+  if (!m || texto.length > 900) return false;
+  const resto = m[1].trim();
+  if (!resto || /^[.:|—–-]/.test(resto)) return true;
+  return texto.length < 160 && !/^\p{Ll}/u.test(resto);
+}
+
+function esFormula(texto) {
+  if (texto.length > 220) return false;
+  const palabras = (texto.match(/\p{L}{3,}/gu) ?? []).length;
+  const simbolos = (texto.match(SIMBOLOS) ?? []).length;
+  if (simbolos && palabras <= 3) return true;
+  if (simbolos >= 2 && palabras <= simbolos * 2) return true;
+  return !palabras && /\p{L}/u.test(texto) && texto.length <= 40;
+}
+
+// Decide qué bloques de una página no tienen sentido en voz alta.
+function clasificarBloques(bloques, pagina, alturaGlobal) {
+  for (const b of bloques) {
+    if (b.elemento) continue;
+    const texto = b.texto.replace(/\u0000/g, '').trim();
+    if (TITULO_REFERENCIAS.test(texto)) continue;
+    if (esLeyenda(texto)) b.elemento = 'leyenda';
+    else if (NOTA.test(texto) && texto.length < 900) b.elemento = 'nota';
+    else if (/^[*†‡§]{1,3}\s*\S/.test(texto) && texto.length < 400) b.elemento = 'nota';
+    else if (esFormula(texto)) b.elemento = 'formula';
+    else if (SOLO_CIFRAS.test(texto) && texto.length <= 200) b.elemento = 'tabla';
+    else if (b.alto < alturaGlobal * 0.88 && b.top > pagina.H * 0.6) b.elemento = 'nota';
+  }
+  // Los rótulos de un gráfico llegan como una tanda de fragmentos sueltos.
+  let inicio = 0;
+  const cerrarTanda = (fin) => {
+    if (fin - inicio >= 5) for (let i = inicio; i < fin; i++) bloques[i].elemento = 'figura';
+  };
+  bloques.forEach((b, i) => {
+    const suelto = !b.elemento && b.rol === 'cuerpo' && !/[.!?:;]\s*$/.test(b.texto) && b.texto.trim().split(/\s+/).length <= 4;
+    if (!suelto) {
+      cerrarTanda(i);
+      inicio = i + 1;
+    }
+  });
+  cerrarTanda(bloques.length);
+  // Un rótulo solo junto a una tabla o figura (el nombre de un eje, por ejemplo) también sobra.
+  bloques.forEach((b, i) => {
+    if (b.elemento || b.rol !== 'cuerpo' || /[.!?:;]\s*$/.test(b.texto) || b.texto.trim().split(/\s+/).length > 3) return;
+    const vecino = [bloques[i - 1], bloques[i + 1]].some((v) => ['tabla', 'figura', 'leyenda'].includes(v?.elemento));
+    if (vecino) b.elemento = 'figura';
+  });
+  for (const b of bloques) if (b.elemento) b.rol = 'cuerpo';
+}
+
 // Devuelve { oraciones, bloques, idioma }.
 export function construirDocumento(paginas) {
   const limpias = quitarMargenes(paginas);
@@ -408,10 +555,16 @@ export function construirDocumento(paginas) {
   limpias.forEach((p, n) => {
     if (!p.items.length) return;
     const ctx = { W: p.W, H: p.H, alto: mediana(p.items.map((c) => c.h)) || alturaGlobal };
-    for (const grupo of ordenLectura(p.items, ctx)) {
-      const b = armarBloque(grupo, n, alturaGlobal);
-      if (b.texto.trim()) bloques.push(b);
+    const { cuerpo, tablas } = separarTablas(p.items, ctx);
+    const dePagina = ordenLectura(cuerpo, ctx).map((grupo) => armarBloque(grupo, n, alturaGlobal)).filter((b) => b.texto.trim());
+    for (const grupo of tablas) {
+      const tabla = armarBloque(grupo, n, alturaGlobal);
+      tabla.elemento = 'tabla';
+      const lugar = dePagina.findIndex((b) => b.top >= tabla.top && b.x0 < tabla.x1 && b.x1 > tabla.x0);
+      dePagina.splice(lugar === -1 ? dePagina.length : lugar, 0, tabla);
     }
+    clasificarBloques(dePagina, p, alturaGlobal);
+    bloques.push(...dePagina);
   });
   bloques = fusionarContinuaciones(bloques);
   bloques.forEach(resolverPartidas);
@@ -428,23 +581,27 @@ export function construirDocumento(paginas) {
     if (esTituloRefs) {
       enReferencias = true;
       sinParecido = 0;
-    } else if (enReferencias) {
+    } else if (enReferencias && !b.elemento) {
       if (pareceReferencia(texto)) sinParecido = 0;
       else if (b.rol === 'titulo' || texto.length > 400 || ++sinParecido >= 2) enReferencias = false;
     }
     const esReferencia = enReferencias && !esTituloRefs && (sinParecido === 0 || texto.length < 200);
     const idioma = idiomaDeTexto(texto) ?? idiomaPrevio;
-    idiomaPrevio = idioma;
+    if (!b.elemento) idiomaPrevio = idioma;
     for (const [ini, fin] of segmentar(b.texto)) {
       const rects = rectangulos(b, ini, fin, limpias);
+      const frase = b.texto.slice(ini, fin);
+      // Una ecuación puede venir pegada al párrafo que la presenta.
+      const propia = esFormula(frase) ? 'formula' : SOLO_CIFRAS.test(frase) ? 'tabla' : null;
       oraciones.push({
         i: oraciones.length,
-        texto: b.texto.slice(ini, fin),
+        texto: frase,
         rects,
         pagina: rects[0]?.p ?? b.pagina,
         bloque: numBloque,
         rol: b.rol,
         referencia: esReferencia,
+        elemento: esReferencia ? null : b.elemento ?? propia,
         idioma,
       });
     }
