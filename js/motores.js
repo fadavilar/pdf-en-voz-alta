@@ -9,21 +9,39 @@ export const VOCES_NEURONALES = [
   { id: 'es_MX-ald-x_low', nombre: 'Ald ligera (México, para el celular)', ruta: 'es/es_MX/ald/x_low/es_MX-ald-x_low.onnx', bytes: 20986952, licencia: 'Unlicense' },
 ];
 
+export const VOCES_INGLESAS = [
+  { id: 'en_US-ljspeech-medium', nombre: 'LJ (Estados Unidos)', ruta: 'en/en_US/ljspeech/medium/en_US-ljspeech-medium.onnx', bytes: 63531379, licencia: 'Dominio público' },
+  { id: 'en_GB-cori-medium', nombre: 'Cori (Reino Unido)', ruta: 'en/en_GB/cori/medium/en_GB-cori-medium.onnx', bytes: 63531379, licencia: 'Dominio público' },
+  { id: 'en_GB-alba-medium', nombre: 'Alba (Reino Unido)', ruta: 'en/en_GB/alba/medium/en_GB-alba-medium.onnx', bytes: 63201294, licencia: 'CC BY 4.0' },
+];
+
 const VOCES_BASE = 'https://huggingface.co/rhasspy/piper-voices/resolve/main/';
 const ORT_WASM = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/ort-wasm-simd-threaded.wasm';
 const ALMACEN = 'pdf-voz-modelos-v1';
-const PREFERENCIA_ACENTO = ['es-CO', 'es-419', 'es-MX', 'es-US', 'es-AR', 'es-ES'];
+const PREFERENCIA_ACENTO = {
+  es: ['es-CO', 'es-419', 'es-MX', 'es-US', 'es-AR', 'es-ES'],
+  en: ['en-US', 'en-GB', 'en-CA', 'en-AU', 'en-IE', 'en-IN'],
+};
 
-export function vocesDelDispositivo() {
-  if (!('speechSynthesis' in window)) return [];
+export function ordenarVoces(voces, idioma) {
+  const acentos = PREFERENCIA_ACENTO[idioma];
   const peso = (v) => {
-    const i = PREFERENCIA_ACENTO.findIndex((a) => a.toLowerCase() === v.lang.replace('_', '-').toLowerCase());
-    return i === -1 ? PREFERENCIA_ACENTO.length : i;
+    const i = acentos.findIndex((a) => a.toLowerCase() === v.lang.replace('_', '-').toLowerCase());
+    return i === -1 ? acentos.length : i;
   };
-  return speechSynthesis
-    .getVoices()
-    .filter((v) => /^es([-_]|$)/i.test(v.lang))
+  return voces
+    .filter((v) => new RegExp(`^${idioma}([-_]|$)`, 'i').test(v.lang))
     .sort((a, b) => peso(a) - peso(b) || a.name.localeCompare(b.name));
+}
+
+export function vocesDelDispositivo(idioma = 'es') {
+  if (!('speechSynthesis' in window)) return [];
+  return ordenarVoces(speechSynthesis.getVoices(), idioma);
+}
+
+// Una voz sin conexión primero: no envía el texto a ningún proveedor.
+export function mejorVoz(voces) {
+  return voces.find((v) => v.localService) ?? voces[0] ?? null;
 }
 
 export function alCambiarVoces(fn) {
@@ -165,7 +183,7 @@ export class MotorNeuronal {
   async preparar(voz) {
     if (this.vozLista === voz.id) return;
     if (!this.worker) {
-      this.worker = new Worker('js/piper-worker.js?v=20261104a');
+      this.worker = new Worker('js/piper-worker.js?v=20261106a');
       this.worker.onmessage = (e) => this.#mensaje(e);
       this.worker.onerror = (e) => {
         const error = new Error(e.message || 'El motor de voz neuronal no pudo iniciar.');

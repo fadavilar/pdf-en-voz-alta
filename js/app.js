@@ -1,13 +1,13 @@
 import * as pdfjs from '../vendor/pdfjs/pdf.min.mjs';
 import { itemsDesdePdf, construirDocumento } from './extraccion.js?v=20261104b';
-import { paraVoz } from './pronunciacion.js';
+import { paraVoz } from './pronunciacion.js?v=20261106a';
 import { Visor } from './visor.js';
 import { Pulso } from './pulso.js';
 import { reconocerPaginas } from './ocr.js';
 import {
-  VOCES_NEURONALES, MotorDispositivo, MotorNeuronal, vocesDelDispositivo, alCambiarVoces, vozGuardada, motorGuardado, borrarVoz,
-} from './motores.js?v=20261104a';
-import { planificar, nombreMp3, duracionLegible, pesoLegible, ExportacionMp3 } from './exportar.js?v=20261104a';
+  VOCES_NEURONALES, VOCES_INGLESAS, MotorDispositivo, MotorNeuronal, vocesDelDispositivo, mejorVoz, alCambiarVoces, vozGuardada, motorGuardado, borrarVoz,
+} from './motores.js?v=20261106a';
+import { planificar, nombreMp3, duracionLegible, pesoLegible, ExportacionMp3 } from './exportar.js?v=20261106a';
 import { Traductor } from './traduccion.js';
 import { iniciarInstalacion } from './instalar.js';
 
@@ -18,6 +18,7 @@ const $ = (id) => document.getElementById(id);
 const PESO_MOTOR_MB = 33;
 const CARACTERES_POR_SEGUNDO = 15;
 const FRASE_PRUEBA = 'Esta es la voz que leerá tu documento. Puedes cambiarla cuando quieras.';
+const FRASE_PRUEBA_INGLES = 'This is the voice that will read the English parts of your document.';
 const MIN_CARACTERES_PAGINA = 20;
 
 const guardar = (clave, valor) => {
@@ -43,6 +44,7 @@ const estado = {
   traducir: leer('traducir') !== 'false',
   esperandoTraduccion: false,
   vozElegida: leer('voz') ?? '',
+  vozIngles: leer('vozIngles') ?? '',
 };
 
 const audio = $('audio');
@@ -54,9 +56,12 @@ const neuronal = new MotorNeuronal(audio, {
     else pintarEstado();
   },
   alProgreso: (hecho, total) => {
-    const p = $('voz-progreso');
-    p.hidden = false;
-    p.value = total ? hecho / total : 0;
+    for (const id of ['voz-progreso', 'voz-ingles-progreso']) {
+      const p = $(id);
+      if (p.dataset.activa !== 'si') continue;
+      p.hidden = false;
+      p.value = total ? hecho / total : 0;
+    }
     const b = document.querySelector('#avisos progress');
     if (b) b.value = total ? hecho / total : 0;
     const texto = document.querySelector('#avisos [data-descarga]');
@@ -197,7 +202,7 @@ function paginasSinTexto() {
 }
 
 function procesarTexto() {
-  const { oraciones, idioma } = construirDocumento(estado.paginas);
+  const { oraciones } = construirDocumento(estado.paginas);
   estado.oraciones = oraciones;
   oraciones.forEach((o) => { o.voz = null; });
   visor.usarOraciones(oraciones);
@@ -212,7 +217,7 @@ function procesarTexto() {
   if (inicio > 0) aviso(`Continúas en la página ${oraciones[estado.idx].pagina + 1}, donde quedaste.`, [
     { texto: 'Empezar desde el principio', alPulsar: (n) => { n.remove(); irA(primeraLegible(0)); } },
   ]);
-  if (idioma === 'en' && !estado.traducir) aviso('Este documento parece estar en inglés. Las voces en español lo leerán con ese acento. Puedes activar la traducción en Ajustes.');
+  pintarIdioma();
   arrancarTraduccion();
 }
 
@@ -259,10 +264,20 @@ function textoMostrado(o) {
   return estado.traducir && o.traduccion ? o.traduccion : o.texto;
 }
 
+// En qué idioma suena la oración: el de lo que se muestra, o el español si su traducción ya viene en camino.
+function idiomaVoz(o) {
+  if (o.idioma !== 'en') return 'es';
+  if (!estado.traducir) return 'en';
+  if (o.traduccion) return 'es';
+  return faltaTraducir(o) ? 'es' : 'en';
+}
+
 function textoVoz(o) {
-  o.voz ??= paraVoz(textoMostrado(o), { citas: !estado.omitirCitas });
+  o.voz ??= paraVoz(textoMostrado(o), { citas: !estado.omitirCitas, idioma: idiomaVoz(o) });
   return o.voz;
 }
+
+const vozPara = (idioma) => (idioma === 'en' ? estado.vozIngles : estado.vozElegida);
 
 function primeraLegible(desde) {
   for (let i = desde; i < estado.oraciones.length; i++) {
@@ -334,10 +349,11 @@ function pintarBotonReproducir() {
 function precargar() {
   if (motor?.tipo !== 'neuronal') return;
   const lista = [];
+  const vozActual = vozPara(idiomaVoz(estado.oraciones[estado.idx]));
   let i = estado.idx;
   while (lista.length < 3) {
     i = siguienteLegible(i);
-    if (i < 0 || faltaTraducir(estado.oraciones[i])) break;
+    if (i < 0 || faltaTraducir(estado.oraciones[i]) || vozPara(idiomaVoz(estado.oraciones[i])) !== vozActual) break;
     lista.push({ i, texto: textoVoz(estado.oraciones[i]) });
   }
   motor.precargar(lista, estado.idx);
@@ -358,6 +374,15 @@ async function bucle() {
         if (turno !== estado.turno) return;
         terminarEsperaTraduccion();
         pintarEstado();
+      }
+      estado.esperandoTraduccion = true; // pausar mientras carga una voz vuelve a empezar la oración
+      const lista = await asegurarVoz(o);
+      if (turno !== estado.turno) return;
+      terminarEsperaTraduccion();
+      if (!lista) {
+        estado.sonando = false;
+        pintarBotonReproducir();
+        return;
       }
       precargar();
       const voz = textoVoz(o) || o.texto;
@@ -390,7 +415,6 @@ async function reproducir() {
     motor.reanudar();
     return;
   }
-  if (!(await asegurarMotor())) return;
   estado.sonando = true;
   pintarBotonReproducir();
   bucle();
@@ -448,11 +472,15 @@ function irA(i) {
 /* ---------- Voces ---------- */
 
 const esNeuronal = (id) => id.startsWith('piper:');
-const vozNeuronal = (id) => VOCES_NEURONALES.find((v) => `piper:${v.id}` === id);
+const vozNeuronal = (id) => [...VOCES_NEURONALES, ...VOCES_INGLESAS].find((v) => `piper:${v.id}` === id);
 
-function pintarVoces() {
-  const select = $('voz');
-  const locales = vocesDelDispositivo();
+function nombreVozSistema(v) {
+  return `${v.name.replace(/^(Microsoft|Google)\s+/, '').replace(/\s+-\s+.*$/, '').replace(/\s+Online.*$/, '')} (${v.lang})${v.localService ? '' : ', en línea'}`;
+}
+
+// Llena una lista de voces y devuelve la que debe quedar elegida.
+function pintarListaVoces(select, idioma, claveGuardada, neuronales) {
+  const locales = vocesDelDispositivo(idioma);
   const grupos = [];
   if (locales.length) {
     const g = document.createElement('optgroup');
@@ -460,14 +488,14 @@ function pintarVoces() {
     for (const v of locales) {
       const o = document.createElement('option');
       o.value = `disp:${v.voiceURI}`;
-      o.textContent = `${v.name.replace(/^(Microsoft|Google)\s+/, '').replace(/\s+-\s+.*$/, '').replace(/\s+Online.*$/, '')} (${v.lang})${v.localService ? '' : ', en línea'}`;
+      o.textContent = nombreVozSistema(v);
       g.append(o);
     }
     grupos.push(g);
   }
   const g = document.createElement('optgroup');
   g.label = 'Voces neuronales (se descargan una vez)';
-  for (const v of VOCES_NEURONALES) {
+  for (const v of neuronales) {
     const o = document.createElement('option');
     o.value = `piper:${v.id}`;
     o.textContent = `${v.nombre}, ${Math.round(v.bytes / 1e6)} MB`;
@@ -478,47 +506,105 @@ function pintarVoces() {
 
   const valores = [...select.options].map((o) => o.value);
   // Sin elección guardada se vuelve a decidir: las voces del sistema suelen llegar tarde.
-  const guardada = leer('voz');
-  let elegida = guardada;
-  if (!guardada || !valores.includes(guardada)) {
-    const local = locales.find((v) => v.localService) ?? locales[0];
-    elegida = local ? `disp:${local.voiceURI}` : `piper:${VOCES_NEURONALES[0].id}`;
-  }
-  select.value = elegida;
+  const guardada = leer(claveGuardada);
+  if (guardada && valores.includes(guardada)) return guardada;
+  const mejor = mejorVoz(locales);
+  return mejor ? `disp:${mejor.voiceURI}` : `piper:${neuronales[0].id}`;
+}
+
+function pintarVoces() {
+  const elegida = pintarListaVoces($('voz'), 'es', 'voz', VOCES_NEURONALES);
+  $('voz').value = elegida;
   aplicarVoz(elegida, { persistir: false });
+  const inglesa = pintarListaVoces($('voz-ingles'), 'en', 'vozIngles', VOCES_INGLESAS);
+  $('voz-ingles').value = inglesa;
+  aplicarVozIngles(inglesa, { persistir: false });
+}
+
+// El botón de voz muestra la que se oye con el idioma elegido.
+function pintarVozActual() {
+  const leeIngles = !estado.traducir && hayIngles();
+  const opcion = (leeIngles ? $('voz-ingles') : $('voz')).selectedOptions[0];
+  $('voz-actual').textContent = opcion ? opcion.textContent.replace(/, \d+ MB$/, '').replace(/, en línea$/, '') : 'Sin elegir';
 }
 
 function aplicarVoz(id, { persistir = true } = {}) {
-  detener();
+  if (id !== estado.vozElegida) detener(); // el sistema avisa de voces nuevas también a mitad de la lectura
   estado.vozElegida = id;
   if (persistir) guardar('voz', id);
-  if (esNeuronal(id)) {
-    motor = neuronal;
-    neuronal.cambiarVelocidad(estado.velocidad);
-  } else {
-    motor = dispositivo;
-    const voz = vocesDelDispositivo().find((v) => `disp:${v.voiceURI}` === id);
-    motor?.usarVoz(voz ?? null);
-    motor?.cambiarVelocidad(estado.velocidad, false);
-  }
-  const opcion = $('voz').selectedOptions[0];
-  $('voz-actual').textContent = opcion ? opcion.textContent.replace(/, \d+ MB$/, '').replace(/, en línea$/, '') : 'Sin elegir';
+  pintarVozActual();
   pintarNotaVoz();
 }
 
+function aplicarVozIngles(id, { persistir = true } = {}) {
+  if (id !== estado.vozIngles) detener();
+  estado.vozIngles = id;
+  if (persistir) guardar('vozIngles', id);
+  pintarVozActual();
+  pintarNotaIngles();
+}
+
+// Deja listo el motor de esa voz. Devuelve false si una voz neuronal aún no está descargada.
+async function activarVoz(id) {
+  if (esNeuronal(id)) {
+    motor = neuronal;
+    neuronal.cambiarVelocidad(estado.velocidad);
+    const v = vozNeuronal(id);
+    if (neuronal.vozLista === v.id) return true;
+    if (!(await vozGuardada(v))) return false;
+    return prepararNeuronal(v);
+  }
+  motor = dispositivo;
+  if (!motor) return false;
+  const idioma = estado.vozIngles === id ? 'en' : 'es';
+  motor.usarVoz(vocesDelDispositivo(idioma).find((v) => `disp:${v.voiceURI}` === id) ?? null);
+  motor.cambiarVelocidad(estado.velocidad, false);
+  return true;
+}
+
+// Prepara la voz de una oración. Si falta descargarla, ofrece hacerlo con un clic y seguir leyendo.
+async function asegurarVoz(o) {
+  const id = vozPara(idiomaVoz(o));
+  if (await activarVoz(id)) return true;
+  if (!esNeuronal(id)) {
+    aviso('Este navegador no tiene voces. Elige una voz neuronal en Ajustes.', [{ texto: 'Abrir ajustes', alPulsar: (n) => { n.remove(); abrirAjustes(); } }]);
+    return false;
+  }
+  const v = vozNeuronal(id);
+  const [hayVoz, hayMotor] = await Promise.all([vozGuardada(v), motorGuardado()]);
+  if (hayVoz) return false; // ya hubo un aviso de error al prepararla
+  document.querySelector('[data-pide-voz]')?.remove();
+  const mb = Math.round(v.bytes / 1e6) + (hayMotor ? 0 : PESO_MOTOR_MB);
+  const nodo = aviso(`Esta lectura necesita la voz ${v.nombre}. Se descargan ${mb} MB una sola vez.`, [{
+    texto: 'Descargar y leer',
+    principal: true,
+    alPulsar: async (n) => {
+      n.remove();
+      if (await prepararNeuronal(v)) reproducir();
+    },
+  }, { texto: 'Abrir ajustes', alPulsar: (n) => { n.remove(); abrirAjustes(); } }]);
+  nodo.dataset.pideVoz = '';
+  return false;
+}
+
 async function pintarNotaVoz() {
-  const id = estado.vozElegida;
-  const nota = $('voz-nota');
-  const descarga = $('voz-descarga');
+  await pintarNotaDe({ id: estado.vozElegida, idioma: 'es', nota: $('voz-nota'), caja: $('voz-descarga'), descargar: $('voz-descargar'), borrar: $('voz-borrar'), progreso: $('voz-progreso'), actual: () => estado.vozElegida });
+}
+
+async function pintarNotaIngles() {
+  await pintarNotaDe({ id: estado.vozIngles, idioma: 'en', nota: $('voz-ingles-nota'), caja: $('voz-ingles-descarga'), descargar: $('voz-ingles-descargar'), borrar: $('voz-ingles-borrar'), progreso: $('voz-ingles-progreso'), actual: () => estado.vozIngles });
+}
+
+async function pintarNotaDe({ id, idioma, nota, caja: descarga, descargar, borrar, progreso, actual }) {
   nota.classList.remove('problema');
-  $('voz-progreso').hidden = true;
+  progreso.hidden = true;
   if (esNeuronal(id)) {
     const v = vozNeuronal(id);
     const [hayVoz, hayMotor] = await Promise.all([vozGuardada(v), motorGuardado()]);
-    if (estado.vozElegida !== id) return;
+    if (actual() !== id) return;
     descarga.hidden = false;
-    $('voz-descargar').hidden = hayVoz;
-    $('voz-borrar').hidden = !hayVoz;
+    descargar.hidden = hayVoz;
+    borrar.hidden = !hayVoz;
     if (hayVoz) {
       nota.textContent = 'Voz guardada en este equipo. Lee sin enviar tu texto a ningún servidor.';
     } else {
@@ -527,7 +613,7 @@ async function pintarNotaVoz() {
     }
   } else {
     descarga.hidden = true;
-    const voz = vocesDelDispositivo().find((x) => `disp:${x.voiceURI}` === id);
+    const voz = vocesDelDispositivo(idioma).find((x) => `disp:${x.voiceURI}` === id);
     if (voz && !voz.localService) {
       nota.classList.add('problema');
       nota.textContent = 'Esta voz funciona en línea: el navegador envía cada oración al proveedor de la voz. Para documentos privados, elige una voz neuronal o una que no diga «en línea».';
@@ -537,24 +623,14 @@ async function pintarNotaVoz() {
   }
 }
 
-// Las voces neuronales necesitan descarga: se confirma antes de gastar datos.
-async function asegurarMotor() {
-  if (!motor) {
-    aviso('Este navegador no tiene voces. Elige una voz neuronal en Ajustes.', [{ texto: 'Abrir ajustes', alPulsar: (n) => { n.remove(); abrirAjustes(); } }]);
-    return false;
-  }
-  if (motor.tipo !== 'neuronal') return true;
-  const v = vozNeuronal(estado.vozElegida);
-  if (motor.vozLista === v.id) return true;
-  if (await vozGuardada(v)) return prepararNeuronal(v);
-  abrirAjustes();
-  return false;
-}
-
 async function prepararNeuronal(v) {
   document.querySelector('#avisos [data-descarga]')?.parentElement.remove();
   const nodo = aviso('Preparando la voz…', [], { conProgreso: true });
+  const inglesa = VOCES_INGLESAS.includes(v);
+  $('voz-progreso').dataset.activa = inglesa ? 'no' : 'si';
+  $('voz-ingles-progreso').dataset.activa = inglesa ? 'si' : 'no';
   $('voz-descargar').disabled = true;
+  $('voz-ingles-descargar').disabled = true;
   $('reproducir').dataset.espera = 'si';
   try {
     await neuronal.preparar(v);
@@ -565,31 +641,40 @@ async function prepararNeuronal(v) {
   } finally {
     nodo.remove();
     $('voz-descargar').disabled = false;
+    $('voz-ingles-descargar').disabled = false;
     $('voz-progreso').hidden = true;
+    $('voz-ingles-progreso').hidden = true;
     $('reproducir').dataset.espera = 'no';
     pintarNotaVoz();
+    pintarNotaIngles();
   }
 }
 
 function abrirAjustes() {
   if (!$('ajustes').open) $('ajustes').showModal();
   pintarNotaVoz();
+  pintarNotaIngles();
 }
 
-async function probarVoz() {
-  const boton = $('voz-probar');
+async function probarVoz(idioma) {
+  const boton = $(idioma === 'en' ? 'voz-ingles-probar' : 'voz-probar');
+  const nota = $(idioma === 'en' ? 'voz-ingles-nota' : 'voz-nota');
+  const id = vozPara(idioma);
   detener();
-  if (!motor) return;
-  if (motor.tipo === 'neuronal') {
-    const v = vozNeuronal(estado.vozElegida);
-    if (motor.vozLista !== v.id && !(await prepararNeuronal(v))) return;
+  if (!(await activarVoz(id))) {
+    if (esNeuronal(id)) {
+      const v = vozNeuronal(id);
+      if (!(await prepararNeuronal(v))) return;
+    } else {
+      return;
+    }
   }
   boton.disabled = true;
   try {
-    await motor.hablar(-1, FRASE_PRUEBA);
+    await motor.hablar(-1, idioma === 'en' ? FRASE_PRUEBA_INGLES : FRASE_PRUEBA);
   } catch (e) {
-    $('voz-nota').classList.add('problema');
-    $('voz-nota').textContent = e.message;
+    nota.classList.add('problema');
+    nota.textContent = e.message;
   } finally {
     boton.disabled = false;
   }
@@ -645,11 +730,8 @@ async function arrancarTraduccion() {
   if (!total) return;
 
   const nodo = aviso('Preparando el traductor…', [{
-    texto: 'Leer sin traducir',
-    alPulsar: () => {
-      $('traducir').checked = false;
-      cambiarTraduccion(false);
-    },
+    texto: 'Leer en inglés',
+    alPulsar: () => cambiarTraduccion(false),
   }], { conProgreso: true });
   const rotulo = nodo.querySelector('p');
   const barra = nodo.querySelector('progress');
@@ -690,6 +772,7 @@ async function arrancarTraduccion() {
   } catch (e) {
     if (turno !== traduccion.turno) return;
     traduccion.fallo = true;
+    for (const x of estado.oraciones) x.voz = null;
     nodo.remove();
     aviso(`No se pudo traducir: ${e.message} El documento se leerá en su idioma original.`);
     liberarEsperas();
@@ -705,20 +788,37 @@ function liberarEsperasDeOtroDocumento() {
   liberarEsperas();
 }
 
+const hayIngles = () => estado.oraciones.some((o) => o.idioma === 'en' && !o.referencia);
+
+function pintarIdioma() {
+  $('control-idioma').hidden = !hayIngles();
+  $('traducir').checked = estado.traducir;
+  for (const b of $('idioma-lectura').querySelectorAll('button')) {
+    b.setAttribute('aria-pressed', String((b.dataset.idioma === 'es') === estado.traducir));
+  }
+  pintarVozActual();
+}
+
+// Un clic cambia de idioma y la lectura sigue en la misma oración; la elección queda guardada.
 function cambiarTraduccion(activa) {
+  if (activa === estado.traducir) return;
+  const seguia = estado.sonando;
   estado.traducir = activa;
   guardar('traducir', String(activa));
   detener();
   neuronal.vaciar();
+  document.querySelector('[data-pide-voz]')?.remove();
   if (activa) {
     for (const o of estado.oraciones) mostrarTraduccion(o);
     if (estado.oraciones.length) arrancarTraduccion();
-    return;
+  } else {
+    traduccion.turno++;
+    liberarEsperasDeOtroDocumento();
+    for (const n of $('avisos').querySelectorAll('.aviso')) if (n.querySelector('progress')) n.remove();
+    for (const o of estado.oraciones) mostrarTraduccion(o);
   }
-  traduccion.turno++;
-  liberarEsperasDeOtroDocumento();
-  for (const n of $('avisos').querySelectorAll('.aviso')) if (n.querySelector('progress')) n.remove();
-  for (const o of estado.oraciones) mostrarTraduccion(o);
+  pintarIdioma();
+  if (seguia) reproducir();
 }
 
 /* ---------- Pantalla encendida ---------- */
@@ -775,7 +875,7 @@ async function pintarResumenDescarga() {
   $('descarga-resumen').textContent = hay
     ? `Cerca de ${duracionLegible(plan.segundos)} de audio y ${pesoLegible(plan.bytes)}, a velocidad ${velocidad}×.`
     : 'Esas páginas no tienen texto para leer. Elige otro rango.';
-  const v = VOCES_NEURONALES.find((x) => x.id === $('descarga-voz').value);
+  const v = vozNeuronal(`piper:${$('descarga-voz').value}`);
   const [hayVoz, hayMotor] = await Promise.all([vozGuardada(v), motorGuardado()]);
   const mb = (hayVoz ? 0 : Math.round(v.bytes / 1e6)) + (hayMotor ? 0 : PESO_MOTOR_MB);
   $('descarga-primera').hidden = mb === 0;
@@ -787,18 +887,21 @@ function abrirDescarga() {
     $('descarga').showModal();
     return;
   }
+  // Un MP3 usa una sola voz: la del idioma que predomina en lo que se va a leer.
+  const legibles = estado.oraciones.filter((o) => !omitida(o));
+  const enIngles = legibles.filter((o) => idiomaVoz(o) === 'en').length;
+  const idioma = enIngles > legibles.length / 2 ? 'en' : 'es';
+  $('descarga-mezcla').hidden = enIngles === 0 || enIngles === legibles.length;
+  const lista = idioma === 'en' ? VOCES_INGLESAS : VOCES_NEURONALES;
   const select = $('descarga-voz');
-  if (!select.options.length) {
-    for (const v of VOCES_NEURONALES) {
-      const o = document.createElement('option');
-      o.value = v.id;
-      o.textContent = `${v.nombre}, ${Math.round(v.bytes / 1e6)} MB`;
-      select.append(o);
-    }
-  }
-  const actual = esNeuronal(estado.vozElegida) ? vozNeuronal(estado.vozElegida)?.id : null;
-  select.value = actual ?? leer('vozDescarga') ?? VOCES_NEURONALES[0].id;
-  if (!select.value) select.value = VOCES_NEURONALES[0].id;
+  select.replaceChildren(...lista.map((v) => {
+    const o = document.createElement('option');
+    o.value = v.id;
+    o.textContent = `${v.nombre}, ${Math.round(v.bytes / 1e6)} MB`;
+    return o;
+  }));
+  const candidatas = [vozPara(idioma).replace(/^piper:/, ''), leer(`vozDescarga-${idioma}`)];
+  select.value = candidatas.find((id) => lista.some((v) => v.id === id)) ?? lista[0].id;
   const total = estado.paginas.length;
   for (const id of ['descarga-desde', 'descarga-hasta']) $(id).max = total;
   $('descarga-desde').value = 1;
@@ -827,10 +930,10 @@ async function traducirRango(desde, hasta) {
 }
 
 async function generarMp3() {
-  const v = VOCES_NEURONALES.find((x) => x.id === $('descarga-voz').value);
+  const v = vozNeuronal(`piper:${$('descarga-voz').value}`);
   if (!planDescarga().textos.length) return;
   const { desde, hasta, total } = limitesDescarga();
-  guardar('vozDescarga', v.id);
+  guardar(`vozDescarga-${VOCES_INGLESAS.includes(v) ? 'en' : 'es'}`, v.id);
   detener();
   neuronal.liberar(); // el modelo de lectura no debe ocupar memoria mientras se genera el archivo
   panelDescarga('proceso');
@@ -1040,7 +1143,8 @@ function fijarVelocidad(v) {
   $('velocidad').value = estado.velocidad;
   $('velocidad-valor').textContent = `${estado.velocidad.toFixed(1).replace('.', ',')}×`;
   guardar('velocidad', String(estado.velocidad));
-  motor?.cambiarVelocidad(estado.velocidad, estado.sonando);
+  dispositivo?.cambiarVelocidad(estado.velocidad, estado.sonando && motor === dispositivo);
+  neuronal.cambiarVelocidad(estado.velocidad);
   pintarEstado();
 }
 $('velocidad').addEventListener('input', (e) => fijarVelocidad(Number(e.target.value)));
@@ -1072,6 +1176,20 @@ $('descarga-otro').addEventListener('click', () => {
 });
 
 $('voz').addEventListener('change', (e) => aplicarVoz(e.target.value));
+$('voz-ingles').addEventListener('change', (e) => aplicarVozIngles(e.target.value));
+$('voz-ingles-descargar').addEventListener('click', () => prepararNeuronal(vozNeuronal(estado.vozIngles)));
+$('voz-ingles-borrar').addEventListener('click', async () => {
+  const v = vozNeuronal(estado.vozIngles);
+  detener();
+  await borrarVoz(v);
+  neuronal.vozLista = null;
+  pintarNotaIngles();
+});
+$('voz-ingles-probar').addEventListener('click', () => probarVoz('en'));
+$('idioma-lectura').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-idioma]');
+  if (b) cambiarTraduccion(b.dataset.idioma === 'es');
+});
 $('voz-descargar').addEventListener('click', async () => {
   const v = vozNeuronal(estado.vozElegida);
   $('voz-progreso').hidden = false;
@@ -1084,7 +1202,7 @@ $('voz-borrar').addEventListener('click', async () => {
   neuronal.vozLista = null;
   pintarNotaVoz();
 });
-$('voz-probar').addEventListener('click', probarVoz);
+$('voz-probar').addEventListener('click', () => probarVoz('es'));
 
 $('traducir').checked = estado.traducir;
 $('traducir').addEventListener('change', (e) => cambiarTraduccion(e.target.checked));

@@ -16,7 +16,7 @@
   <!-- Habilita varios hilos para la voz neuronal: GitHub Pages no permite fijar estas cabeceras en el servidor. -->
   <script>window.coi = { quiet: true };</script>
   <script src="coi-serviceworker.js"></script>
-  <link rel="stylesheet" href="css/app.css?v=20261103d">
+  <link rel="stylesheet" href="css/app.css?v=20261106a">
   <script>
     try {
       const guardado = localStorage.getItem('pdfvoz:tema');
@@ -58,7 +58,7 @@
       <button type="button" class="boton-suave" data-instalar hidden>Instalar app</button>
     </div>
     <h1 class="titular"><span class="titular-marca">Abre un PDF y escúchalo en español.</span></h1>
-    <p class="entrada">Si está en inglés, lo traduce al español. Cada oración se resalta mientras suena, y las columnas de los artículos se leen en orden.</p>
+    <p class="entrada">Si está en inglés, lo traduce al español o lo lee con voz inglesa, como prefieras. Cada oración se resalta mientras suena, y las columnas de los artículos se leen en orden.</p>
     <div class="zona-carga" id="zona-carga">
       <p class="zona-texto">Arrastra el archivo hasta aquí</p>
       <div class="zona-acciones">
@@ -97,6 +97,13 @@
         </div>
         <p class="estado" id="estado" aria-live="polite"></p>
         <div class="mandos-voz">
+          <div class="control-idioma" id="control-idioma" hidden>
+            <span id="idioma-rotulo">Escuchar en</span>
+            <div class="segmento" id="idioma-lectura" role="group" aria-labelledby="idioma-rotulo">
+              <button type="button" data-idioma="es" aria-pressed="true">Español</button>
+              <button type="button" data-idioma="en" aria-pressed="false">Inglés</button>
+            </div>
+          </div>
           <label class="control-velocidad">
             <span>Velocidad <output id="velocidad-valor">1,0×</output></span>
             <input type="range" id="velocidad" min="0.6" max="2" step="0.1" value="1">
@@ -131,6 +138,19 @@
         <progress id="voz-progreso" max="1" value="0" hidden></progress>
       </div>
       <button type="button" class="boton-suave" id="voz-probar">Escuchar una frase de prueba</button>
+    </section>
+
+    <section>
+      <h3>Voz en inglés</h3>
+      <label class="campo" for="voz-ingles">Quién lee las partes en inglés cuando no se traducen</label>
+      <select id="voz-ingles"></select>
+      <p class="nota" id="voz-ingles-nota"></p>
+      <div class="descarga" id="voz-ingles-descarga" hidden>
+        <button type="button" class="boton-principal" id="voz-ingles-descargar">Descargar voz</button>
+        <button type="button" class="boton-suave" id="voz-ingles-borrar" hidden>Borrar voz de este equipo</button>
+        <progress id="voz-ingles-progreso" max="1" value="0" hidden></progress>
+      </div>
+      <button type="button" class="boton-suave" id="voz-ingles-probar">Escuchar una frase de prueba</button>
     </section>
 
     <section>
@@ -173,7 +193,7 @@
         <a href="https://github.com/arseneyr/wasm-media-encoders" rel="noopener" target="_blank">wasm-media-encoders</a> (MIT) con el codificador LAME (LGPL),
         <a href="https://github.com/mozilla/translations" rel="noopener" target="_blank">Bergamot y los modelos de Firefox Translations</a> (MPL-2.0) para traducir, y las
         <a href="https://huggingface.co/rhasspy/piper-voices" rel="noopener" target="_blank">voces de Piper</a>:
-        Ald (Unlicense), Claude (Apache-2.0; voz de HirCoir, sin relación con Anthropic), Davefx (CC0) y Daniela (CC BY-SA 4.0, de larcanio).
+        Ald (Unlicense), Claude (Apache-2.0; voz de HirCoir, sin relación con Anthropic), Davefx (CC0), Daniela (CC BY-SA 4.0, de larcanio), LJ y Cori (dominio público) y Alba (CC BY 4.0).
         Tipografías Literata y Atkinson Hyperlegible (OFL).</p>
     </section>
   </dialog>
@@ -189,6 +209,7 @@
         <label class="campo" for="descarga-voz">Voz</label>
         <select id="descarga-voz"></select>
         <p class="nota">Solo las voces neuronales se pueden guardar: el navegador no da acceso al sonido de las voces del sistema.</p>
+        <p class="nota" id="descarga-mezcla" hidden>Este documento mezcla inglés y español: esta voz leerá todo el audio.</p>
         <div class="rango-paginas">
           <label>Desde la página <input type="number" id="descarga-desde" min="1" value="1" inputmode="numeric"></label>
           <label>Hasta la página <input type="number" id="descarga-hasta" min="1" value="1" inputmode="numeric"></label>
@@ -242,6 +263,6 @@
   <div class="soltar" id="soltar" hidden>Suelta el PDF para abrirlo</div>
   <input type="file" id="archivo" accept="application/pdf,.pdf" hidden>
   <audio id="audio" preload="auto"></audio>
-  <script type="module" src="js/app.js?v=20261104b"></script>
+  <script type="module" src="js/app.js?v=20261106a"></script>
 </body>
 </html>

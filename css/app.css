@@ -344,6 +344,8 @@ svg { stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linej
 .estado { margin: 0; min-width: 0; color: var(--tinta-suave); font-size: 0.95rem; font-variant-numeric: tabular-nums; }
 
 .mandos-voz { display: flex; align-items: center; gap: 20px; }
+.control-idioma { display: grid; gap: 2px; font-size: 0.9rem; }
+.control-idioma .segmento button { min-height: 32px; padding: 2px 12px; font-size: 0.92rem; }
 .control-velocidad { display: grid; gap: 2px; width: 170px; font-size: 0.9rem; }
 .control-velocidad output { font-weight: 700; font-variant-numeric: tabular-nums; }
 .control-velocidad input { width: 100%; accent-color: var(--petroleo); }
@@ -447,7 +449,9 @@ svg { stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linej
   .panel-texto { border-left: 0; }
   .mandos { grid-template-columns: 1fr auto; }
   .estado { grid-column: 1 / -1; grid-row: 2; }
-  .mandos-voz { grid-column: 1 / -1; grid-row: 3; justify-content: space-between; }
+  .mandos-voz { grid-column: 1 / -1; grid-row: 3; flex-wrap: wrap; justify-content: space-between; }
+  .control-idioma { flex: 1 1 100%; grid-template-columns: auto 1fr; align-items: center; gap: 10px; }
+  .control-idioma .segmento button { flex: 1; min-height: 40px; }
   .control-velocidad { flex: 1; width: auto; }
   .boton-voz { flex: 1; min-width: 0; max-width: 40%; }
 }

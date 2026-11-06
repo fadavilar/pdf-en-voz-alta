@@ -75,6 +75,8 @@ async function preparar(voz) {
     traer(`${VOCES_BASE}${voz.ruta}`, pModelo),
     traer(`${VOCES_BASE}${voz.ruta}.json`),
   ]);
+  await sesion?.release();
+  sesion = null;
   ort.env.wasm.wasmBinary = new Uint8Array(wasmOrt);
   fonemasDatos = datos;
   fonemasWasm = wasmFon;

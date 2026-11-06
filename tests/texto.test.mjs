@@ -5,6 +5,7 @@ import { construirDocumento, segmentar, idiomaDeTexto } from '../js/extraccion.j
 import { paraVoz } from '../js/pronunciacion.js';
 import { planificar, nombreMp3, duracionLegible } from '../js/exportar.js';
 import { plataforma } from '../js/instalar.js';
+import { ordenarVoces, mejorVoz } from '../js/motores.js';
 
 const caja = (str, x, top, w = str.length * 5, h = 10) => ({ str, x, base: top + h * 0.86, top, w, h });
 
@@ -206,4 +207,27 @@ test('reconoce el inglés aun en oraciones cortas de un documento breve', () => 
   const { oraciones, idioma } = construirDocumento([{ W: 600, H: 800, items }]);
   assert.equal(idioma, 'en');
   assert.deepEqual(oraciones.map((o) => o.idioma), ['en', 'en', 'en']);
+});
+
+test('adapta símbolos y abreviaturas al inglés sin usar reglas en español', () => {
+  assert.equal(paraVoz('The effect was 25% (95% CI 10-40) [3].', { idioma: 'en' }), 'The effect was 25 percent (95 percent confidence interval 10 to 40).');
+  assert.equal(paraVoz('Smith et al. found p<0.05 and n=120.', { idioma: 'en' }), 'Smith and colleagues found p less than 0.05 and n equals 120.');
+  assert.equal(paraVoz('They gave 500 mg daily, see https://example.org/a.', { idioma: 'en' }), 'They gave 500 milligrams daily, see link');
+  assert.equal(paraVoz('MATERIALS AND METHODS', { idioma: 'en' }), 'Materials and methods');
+  assert.equal(paraVoz('El efecto fue 25 %.'), 'El efecto fue 25 por ciento.');
+});
+
+test('elige voces del idioma pedido y prefiere las que leen sin conexión', () => {
+  const voces = [
+    { name: 'Helena', lang: 'es-ES', localService: true },
+    { name: 'Natural', lang: 'en-US', localService: false },
+    { name: 'Hazel', lang: 'en-GB', localService: true },
+    { name: 'Zira', lang: 'en-US', localService: true },
+    { name: 'Espanglish', lang: 'eng', localService: true },
+  ];
+  const inglesas = ordenarVoces(voces, 'en');
+  assert.deepEqual(inglesas.map((v) => v.name), ['Natural', 'Zira', 'Hazel']);
+  assert.equal(mejorVoz(inglesas).name, 'Zira');
+  assert.equal(mejorVoz(ordenarVoces(voces, 'es')).name, 'Helena');
+  assert.equal(mejorVoz([]), null);
 });
