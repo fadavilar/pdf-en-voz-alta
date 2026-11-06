@@ -14,6 +14,7 @@ Abre un PDF y escúchalo en español, directamente en el navegador. El archivo n
 - Recuerda en qué oración quedaste con cada archivo.
 - Traduce siempre al español lo que esté en inglés, dentro del dispositivo y por bloques, de modo que un resumen en inglés de un artículo en español también se traduce. Se puede desactivar en Ajustes.
 - Con un clic en «Escuchar en: Inglés», lee el original con voz inglesa y sigue en la misma oración. En un documento que mezcla idiomas, cada parte suena con la voz de su idioma. La elección queda guardada.
+- Con una voz neuronal, sigue leyendo con la pantalla bloqueada y se controla desde la pantalla de bloqueo. En el celular es la voz predeterminada, porque las voces del sistema se detienen al bloquear.
 - Descarga el audio en MP3 (64 kbit/s), con voces neuronales, de todo el documento o de un rango de páginas. Usa [wasm-media-encoders](https://github.com/arseneyr/wasm-media-encoders) (MIT) con el codificador LAME (LGPL), en `vendor/mp3/`.
 - Se instala en Android e iOS como app web, con su logo en la pantalla de inicio. No se distribuye por Play Store ni App Store, y necesita conexión para abrirse.
 

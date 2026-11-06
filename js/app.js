@@ -6,10 +6,10 @@ import { Pulso } from './pulso.js';
 import { reconocerPaginas } from './ocr.js';
 import {
   VOCES_NEURONALES, VOCES_INGLESAS, MotorDispositivo, MotorNeuronal, vocesDelDispositivo, mejorVoz, alCambiarVoces, vozGuardada, motorGuardado, borrarVoz,
-} from './motores.js?v=20261106a';
+} from './motores.js?v=20261106b';
 import { planificar, nombreMp3, duracionLegible, pesoLegible, ExportacionMp3 } from './exportar.js?v=20261106a';
 import { Traductor } from './traduccion.js';
-import { iniciarInstalacion } from './instalar.js';
+import { iniciarInstalacion, plataforma } from './instalar.js';
 
 const BASE_PDFJS = new URL('../vendor/pdfjs/', import.meta.url).href;
 pdfjs.GlobalWorkerOptions.workerSrc = `${BASE_PDFJS}pdf.worker.min.mjs`;
@@ -20,6 +20,9 @@ const CARACTERES_POR_SEGUNDO = 15;
 const FRASE_PRUEBA = 'Esta es la voz que leerá tu documento. Puedes cambiarla cuando quieras.';
 const FRASE_PRUEBA_INGLES = 'This is the voice that will read the English parts of your document.';
 const MIN_CARACTERES_PAGINA = 20;
+const ORACIONES_POR_ADELANTADO = 8;
+// En el celular, solo las voces neuronales siguen sonando con la pantalla bloqueada.
+const ES_MOVIL = plataforma(navigator.userAgent, navigator.maxTouchPoints) !== 'otro';
 
 const guardar = (clave, valor) => {
   try { localStorage.setItem(`pdfvoz:${clave}`, typeof valor === 'string' ? valor : JSON.stringify(valor)); } catch { /* sin almacenamiento */ }
@@ -48,6 +51,7 @@ const estado = {
 };
 
 const audio = $('audio');
+if (navigator.audioSession) navigator.audioSession.type = 'playback';
 const dispositivo = 'speechSynthesis' in window ? new MotorDispositivo() : null;
 const neuronal = new MotorNeuronal(audio, {
   alEsperar: (esperando) => {
@@ -351,7 +355,7 @@ function precargar() {
   const lista = [];
   const vozActual = vozPara(idiomaVoz(estado.oraciones[estado.idx]));
   let i = estado.idx;
-  while (lista.length < 3) {
+  while (lista.length < ORACIONES_POR_ADELANTADO) {
     i = siguienteLegible(i);
     if (i < 0 || faltaTraducir(estado.oraciones[i]) || vozPara(idiomaVoz(estado.oraciones[i])) !== vozActual) break;
     lista.push({ i, texto: textoVoz(estado.oraciones[i]) });
@@ -370,6 +374,7 @@ async function bucle() {
         estado.esperandoTraduccion = true;
         $('reproducir').dataset.espera = 'si';
         $('estado').textContent = 'Traduciendo esta oración…';
+        if (esNeuronal(vozPara('es'))) neuronal.mantenerVivo();
         await esperarTraduccion(o);
         if (turno !== estado.turno) return;
         terminarEsperaTraduccion();
@@ -379,7 +384,9 @@ async function bucle() {
       const lista = await asegurarVoz(o);
       if (turno !== estado.turno) return;
       terminarEsperaTraduccion();
+      actualizarVigilia();
       if (!lista) {
+        neuronal.detener();
         estado.sonando = false;
         pintarBotonReproducir();
         return;
@@ -415,6 +422,10 @@ async function reproducir() {
     motor.reanudar();
     return;
   }
+  // Este clic habilita el audio: en iOS lo que suene después, ya bloqueado, depende de él.
+  const voz = vozPara(idiomaVoz(estado.oraciones[estado.idx]));
+  if (esNeuronal(voz)) neuronal.mantenerVivo();
+  else avisarBloqueo();
   estado.sonando = true;
   pintarBotonReproducir();
   bucle();
@@ -508,8 +519,13 @@ function pintarListaVoces(select, idioma, claveGuardada, neuronales) {
   // Sin elección guardada se vuelve a decidir: las voces del sistema suelen llegar tarde.
   const guardada = leer(claveGuardada);
   if (guardada && valores.includes(guardada)) return guardada;
-  const mejor = mejorVoz(locales);
-  return mejor ? `disp:${mejor.voiceURI}` : `piper:${neuronales[0].id}`;
+  const mejor = ES_MOVIL ? null : mejorVoz(locales);
+  return mejor ? `disp:${mejor.voiceURI}` : `piper:${vozNeuronalInicial(neuronales).id}`;
+}
+
+// La ligera se genera más rápido, y en un celular eso evita pausas con la pantalla bloqueada.
+function vozNeuronalInicial(neuronales) {
+  return (ES_MOVIL && neuronales.find((v) => v.id.endsWith('x_low'))) || neuronales[0];
 }
 
 function pintarVoces() {
@@ -552,6 +568,7 @@ async function activarVoz(id) {
     const v = vozNeuronal(id);
     if (neuronal.vozLista === v.id) return true;
     if (!(await vozGuardada(v))) return false;
+    neuronal.mantenerVivo();
     return prepararNeuronal(v);
   }
   motor = dispositivo;
@@ -580,11 +597,37 @@ async function asegurarVoz(o) {
     principal: true,
     alPulsar: async (n) => {
       n.remove();
+      neuronal.mantenerVivo();
       if (await prepararNeuronal(v)) reproducir();
+      else neuronal.detener();
     },
   }, { texto: 'Abrir ajustes', alPulsar: (n) => { n.remove(); abrirAjustes(); } }]);
   nodo.dataset.pideVoz = '';
   return false;
+}
+
+// Una sola vez por sesión: ofrece pasar a una voz que no se detiene al bloquear la pantalla.
+async function avisarBloqueo() {
+  if (!ES_MOVIL || estado.avisoBloqueo) return;
+  estado.avisoBloqueo = true;
+  const idioma = idiomaVoz(estado.oraciones[estado.idx]);
+  const v = vozNeuronalInicial(idioma === 'en' ? VOCES_INGLESAS : VOCES_NEURONALES);
+  const [hayVoz, hayMotor] = await Promise.all([vozGuardada(v), motorGuardado()]);
+  const mb = (hayVoz ? 0 : Math.round(v.bytes / 1e6)) + (hayMotor ? 0 : PESO_MOTOR_MB);
+  aviso(`Esta voz del sistema se detiene al bloquear la pantalla. Una voz neuronal sigue sonando${mb ? ` (se descargan ${mb} MB una sola vez)` : ''}.`, [{
+    texto: 'Usar voz neuronal',
+    principal: true,
+    alPulsar: async (n) => {
+      n.remove();
+      const seleccion = idioma === 'en' ? $('voz-ingles') : $('voz');
+      seleccion.value = `piper:${v.id}`;
+      if (idioma === 'en') aplicarVozIngles(seleccion.value);
+      else aplicarVoz(seleccion.value);
+      neuronal.mantenerVivo();
+      if (await prepararNeuronal(v)) reproducir();
+      else neuronal.detener();
+    },
+  }]);
 }
 
 async function pintarNotaVoz() {
@@ -618,7 +661,7 @@ async function pintarNotaDe({ id, idioma, nota, caja: descarga, descargar, borra
       nota.classList.add('problema');
       nota.textContent = 'Esta voz funciona en línea: el navegador envía cada oración al proveedor de la voz. Para documentos privados, elige una voz neuronal o una que no diga «en línea».';
     } else {
-      nota.textContent = 'Esta voz viene con tu sistema y lee sin conexión.';
+      nota.textContent = `Esta voz viene con tu sistema y lee sin conexión.${ES_MOVIL ? ' Se detiene si bloqueas la pantalla.' : ''}`;
     }
   }
 }
@@ -827,7 +870,8 @@ function cambiarTraduccion(activa) {
 const vigilia = { bloqueo: null, pidiendo: false };
 
 async function actualizarVigilia() {
-  const hacePantalla = estado.sonando || Boolean(descarga.trabajo);
+  // La voz neuronal sigue con la pantalla apagada; la del sistema y la generación del MP3, no siempre.
+  const hacePantalla = (estado.sonando && motor === dispositivo) || Boolean(descarga.trabajo);
   if (!hacePantalla) {
     vigilia.bloqueo?.release().catch(() => {});
     vigilia.bloqueo = null;
@@ -844,7 +888,21 @@ async function actualizarVigilia() {
   vigilia.pidiendo = false;
 }
 
-document.addEventListener('visibilitychange', actualizarVigilia);
+document.addEventListener('visibilitychange', () => {
+  actualizarVigilia();
+  if (document.visibilityState !== 'visible' || !estado.sonando || motor !== dispositivo) return;
+  // El sistema retuvo la voz durante el bloqueo: se retoma la oración al volver.
+  setTimeout(() => {
+    if (estado.sonando && motor === dispositivo && !speechSynthesis.speaking) irA(estado.idx);
+  }, 400);
+});
+
+// Una llamada o desconectar los audífonos pausan el audio: la app debe mostrarlo y poder reanudar.
+audio.addEventListener('pause', () => {
+  setTimeout(() => {
+    if (audio.paused && estado.sonando && motor === neuronal && !estado.esperandoTraduccion) pausar();
+  }, 500);
+});
 
 /* ---------- Descargar audio ---------- */
 
@@ -936,6 +994,7 @@ async function generarMp3() {
   guardar(`vozDescarga-${VOCES_INGLESAS.includes(v) ? 'en' : 'es'}`, v.id);
   detener();
   neuronal.liberar(); // el modelo de lectura no debe ocupar memoria mientras se genera el archivo
+  neuronal.mantenerVivo(); // para que la generación siga si se bloquea la pantalla
   panelDescarga('proceso');
   $('descarga-estado').textContent = 'Preparando la voz…';
   $('descarga-barra').value = 0;
@@ -944,6 +1003,7 @@ async function generarMp3() {
   const traducido = await traducirRango(desde, hasta);
   descarga.trabajo = null;
   if (!traducido) {
+    neuronal.detener();
     panelDescarga('opciones');
     pintarResumenDescarga();
     return;
@@ -981,6 +1041,7 @@ async function generarMp3() {
   }
   descarga.trabajo = null;
   actualizarVigilia();
+  neuronal.detener();
 
   if (error) {
     panelDescarga('opciones');
@@ -1055,7 +1116,14 @@ function mostrarLector(nombre) {
   document.title = `${nombre}: PDF en voz alta`;
   requestAnimationFrame(() => pulso.dibujar());
   if ('mediaSession' in navigator) {
-    navigator.mediaSession.metadata = new MediaMetadata({ title: nombre, artist: 'PDF en voz alta' });
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: nombre,
+      artist: 'PDF en voz alta',
+      artwork: [
+        { src: 'iconos/icono-192.png', sizes: '192x192', type: 'image/png' },
+        { src: 'iconos/icono-512.png', sizes: '512x512', type: 'image/png' },
+      ],
+    });
   }
 }
 

@@ -5,7 +5,7 @@ import { construirDocumento, segmentar, idiomaDeTexto } from '../js/extraccion.j
 import { paraVoz } from '../js/pronunciacion.js';
 import { planificar, nombreMp3, duracionLegible } from '../js/exportar.js';
 import { plataforma } from '../js/instalar.js';
-import { ordenarVoces, mejorVoz } from '../js/motores.js';
+import { ordenarVoces, mejorVoz, silencioWav } from '../js/motores.js';
 
 const caja = (str, x, top, w = str.length * 5, h = 10) => ({ str, x, base: top + h * 0.86, top, w, h });
 
@@ -230,4 +230,12 @@ test('elige voces del idioma pedido y prefiere las que leen sin conexión', () =
   assert.equal(mejorVoz(inglesas).name, 'Zira');
   assert.equal(mejorVoz(ordenarVoces(voces, 'es')).name, 'Helena');
   assert.equal(mejorVoz([]), null);
+});
+
+test('el audio que mantiene la sesión es un WAV válido y en silencio', () => {
+  const buffer = silencioWav();
+  const v = new DataView(buffer);
+  assert.equal(String.fromCharCode(v.getUint8(0), v.getUint8(1), v.getUint8(2), v.getUint8(3)), 'RIFF');
+  assert.equal(v.getUint32(40, true), buffer.byteLength - 44);
+  assert.ok(new Uint8Array(buffer, 44).every((b) => b === 0));
 });

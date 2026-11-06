@@ -48,6 +48,28 @@ export function alCambiarVoces(fn) {
   if ('speechSynthesis' in window) speechSynthesis.addEventListener('voiceschanged', fn);
 }
 
+// Un segundo de silencio en WAV. Mientras suena, el teléfono mantiene abierta la sesión de audio
+// y no suspende la página aunque la pantalla esté bloqueada.
+export function silencioWav() {
+  const frecuencia = 8000;
+  const buffer = new ArrayBuffer(44 + frecuencia * 2);
+  const v = new DataView(buffer);
+  const ascii = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+  ascii(0, 'RIFF');
+  v.setUint32(4, 36 + frecuencia * 2, true);
+  ascii(8, 'WAVEfmt ');
+  v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true);
+  v.setUint16(22, 1, true);
+  v.setUint32(24, frecuencia, true);
+  v.setUint32(28, frecuencia * 2, true);
+  v.setUint16(32, 2, true);
+  v.setUint16(34, 16, true);
+  ascii(36, 'data');
+  v.setUint32(40, frecuencia * 2, true);
+  return buffer;
+}
+
 export class MotorDispositivo {
   constructor() {
     this.tipo = 'dispositivo';
@@ -70,6 +92,8 @@ export class MotorDispositivo {
     u.rate = this.velocidad;
     const base = p.desde;
     const guardia = setTimeout(() => {
+      // Con la pantalla bloqueada el sistema retiene la voz: no es un error, sigue al volver.
+      if (document.visibilityState === 'hidden') return;
       if (turno === this.turno && !p.empezo) {
         this.turno++;
         speechSynthesis.cancel();
@@ -245,7 +269,7 @@ export class MotorNeuronal {
       return false;
     });
     for (const [clave, e] of this.cache) {
-      if (e.url && Math.abs(e.i - actual) > 8) {
+      if (e.url && Math.abs(e.i - actual) > 12) {
         URL.revokeObjectURL(e.url);
         this.cache.delete(clave);
       }
@@ -270,10 +294,36 @@ export class MotorNeuronal {
     this.cache.clear();
   }
 
+  // Hace sonar silencio hasta que llegue audio real. Debe llamarse desde un clic la primera vez.
+  mantenerVivo() {
+    const a = this.audio;
+    if (this.enSilencio && !a.paused) return;
+    this.silencio ??= URL.createObjectURL(new Blob([silencioWav()], { type: 'audio/wav' }));
+    this.enSilencio = true;
+    a.onended = null;
+    a.onerror = null;
+    a.loop = true;
+    a.src = this.silencio;
+    a.play().catch(() => {});
+  }
+
+  #soltar() {
+    this.enPausa = false;
+    this.turnoActual = null;
+    this.audio.onended = null;
+    this.audio.onerror = null;
+    if (this.pendiente) {
+      this.pendiente.resolve('cancelado');
+      this.pendiente = null;
+    }
+  }
+
   async hablar(i, texto) {
-    this.detener();
+    // Sin pausar el reproductor: cortar el sonido entre oraciones cierra la sesión de audio.
+    this.#soltar();
     const turno = {};
     this.turnoActual = turno;
+    if (!this.cache.get(`${this.vozLista}:${i}:${texto}`)?.url) this.mantenerVivo();
     let listo = false;
     const aviso = setTimeout(() => {
       if (!listo && this.turnoActual === turno) this.alEsperar?.(true);
@@ -298,6 +348,9 @@ export class MotorNeuronal {
         this.pendiente = null;
         reject(new Error('No se pudo reproducir el audio generado.'));
       };
+      this.enSilencio = false;
+      a.loop = false;
+      a.defaultPlaybackRate = this.velocidad;
       a.src = url;
       a.playbackRate = this.velocidad;
       if (!this.enPausa) a.play().catch((e) => {
@@ -317,22 +370,19 @@ export class MotorNeuronal {
   reanudar() {
     this.enPausa = false;
     if (this.audio.src && this.pendiente) this.audio.play().catch(() => {});
+    else if (this.turnoActual) this.mantenerVivo();
   }
 
   detener() {
-    this.enPausa = false;
-    this.turnoActual = null;
-    this.audio.onended = null;
-    this.audio.onerror = null;
+    this.#soltar();
+    this.enSilencio = false;
+    this.audio.loop = false;
     this.audio.pause();
-    if (this.pendiente) {
-      this.pendiente.resolve('cancelado');
-      this.pendiente = null;
-    }
   }
 
   cambiarVelocidad(v) {
     this.velocidad = v;
+    this.audio.defaultPlaybackRate = v;
     this.audio.playbackRate = v;
   }
 }
