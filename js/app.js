@@ -6,8 +6,9 @@ import { Pulso } from './pulso.js';
 import { reconocerPaginas } from './ocr.js';
 import {
   VOCES_NEURONALES, VOCES_INGLESAS, MotorDispositivo, MotorNeuronal, vocesDelDispositivo, mejorVoz, alCambiarVoces, vozGuardada, motorGuardado, borrarVoz,
-} from './motores.js?v=20261106b';
-import { planificar, nombreMp3, duracionLegible, pesoLegible, ExportacionMp3 } from './exportar.js?v=20261106a';
+} from './motores.js?v=20261124a';
+import { planificar, nombreMp3, duracionLegible, pesoLegible, ExportacionMp3 } from './exportar.js?v=20261124a';
+import { anotar, textoRegistro, vigilar } from './registro.js?v=20261124a';
 import { Traductor } from './traduccion.js';
 import { iniciarInstalacion, plataforma } from './instalar.js';
 
@@ -20,7 +21,7 @@ const CARACTERES_POR_SEGUNDO = 15;
 const FRASE_PRUEBA = 'Esta es la voz que leerá tu documento. Puedes cambiarla cuando quieras.';
 const FRASE_PRUEBA_INGLES = 'This is the voice that will read the English parts of your document.';
 const MIN_CARACTERES_PAGINA = 20;
-const ORACIONES_POR_ADELANTADO = 8;
+const SEGUNDOS_POR_ADELANTADO = 900;
 const NOMBRE_ELEMENTO = { tabla: 'una tabla', formula: 'una fórmula', leyenda: 'un pie de tabla o figura', nota: 'una nota', figura: 'un texto de figura' };
 // En el celular, solo las voces neuronales siguen sonando con la pantalla bloqueada.
 const ES_MOVIL = plataforma(navigator.userAgent, navigator.maxTouchPoints) !== 'otro';
@@ -52,10 +53,21 @@ const estado = {
   vozIngles: leer('vozIngles') ?? '',
 };
 
+// Quien eligió antes una voz del sistema en el celular pasa a una neuronal, que no se detiene al
+// salir de la app. Solo una vez: después se respeta lo que elija.
+if (ES_MOVIL && !leer('fondoV2')) {
+  for (const clave of ['voz', 'vozIngles']) {
+    if (leer(clave)?.startsWith('disp:')) guardar(clave, '');
+  }
+  guardar('fondoV2', 'si');
+}
+
 const audio = $('audio');
+vigilar(audio);
 if (navigator.audioSession) navigator.audioSession.type = 'playback';
 const dispositivo = 'speechSynthesis' in window ? new MotorDispositivo() : null;
 const neuronal = new MotorNeuronal(audio, {
+  registrar: anotar,
   alEsperar: (esperando) => {
     $('reproducir').dataset.espera = esperando ? 'si' : 'no';
     if (esperando) $('estado').textContent = 'Generando el audio de esta oración…';
@@ -142,6 +154,7 @@ function pedirClave(incorrecta) {
 
 async function abrirDatos(datos, nombre, tamano) {
   detener();
+  neuronal.vaciar();
   mostrarLector(nombre);
   limpiarAvisos();
   traduccion.turno++;
@@ -337,8 +350,9 @@ function pintarEstado() {
   let restante = 0;
   for (let i = estado.idx; i < total; i++) if (!omitida(estado.oraciones[i])) restante += estado.oraciones[i].texto.length;
   const minutos = Math.ceil(restante / CARACTERES_POR_SEGUNDO / estado.velocidad / 60);
+  const listos = motor === neuronal ? Math.floor(neuronal.adelanto() / estado.velocidad / 60) : 0;
   const tiempo = minutos >= 60 ? `${Math.floor(minutos / 60)} h ${minutos % 60} min` : `${minutos} min`;
-  $('estado').textContent = `Página ${o.pagina + 1} de ${estado.paginas.length}. Oración ${estado.idx + 1} de ${total}. Quedan cerca de ${tiempo}.`;
+  $('estado').textContent = `Página ${o.pagina + 1} de ${estado.paginas.length}. Oración ${estado.idx + 1} de ${total}. Quedan cerca de ${tiempo}.${listos ? ` Audio listo: ${listos} min.` : ''}`;
 }
 
 function bloquearMandos(bloqueado) {
@@ -356,18 +370,24 @@ function pintarBotonReproducir() {
 function precargar() {
   if (motor?.tipo !== 'neuronal') return;
   const lista = [];
-  const vozActual = vozPara(idiomaVoz(estado.oraciones[estado.idx]));
+  let segundos = 0;
   let i = estado.idx;
-  while (lista.length < ORACIONES_POR_ADELANTADO) {
+  while (segundos < SEGUNDOS_POR_ADELANTADO) {
     i = siguienteLegible(i);
-    if (i < 0 || faltaTraducir(estado.oraciones[i]) || vozPara(idiomaVoz(estado.oraciones[i])) !== vozActual) break;
-    lista.push({ i, texto: textoVoz(estado.oraciones[i]) });
+    const o = estado.oraciones[i];
+    if (!o || faltaTraducir(o)) break;
+    const voz = vozNeuronal(vozPara(idiomaVoz(o)));
+    if (!voz || !neuronal.disponibles.has(voz.id)) break;
+    const texto = textoVoz(o);
+    segundos += texto.length / CARACTERES_POR_SEGUNDO;
+    lista.push({ i, texto, voz });
   }
-  motor.precargar(lista, estado.idx);
+  motor.precargar(lista, { ultima: i < 0 });
 }
 
 async function bucle() {
   const turno = ++estado.turno;
+  let fallos = 0;
   try {
     while (estado.sonando && turno === estado.turno) {
       const o = estado.oraciones[estado.idx];
@@ -377,7 +397,6 @@ async function bucle() {
         estado.esperandoTraduccion = true;
         $('reproducir').dataset.espera = 'si';
         $('estado').textContent = 'Traduciendo esta oración…';
-        if (esNeuronal(vozPara('es'))) neuronal.mantenerVivo();
         await esperarTraduccion(o);
         if (turno !== estado.turno) return;
         terminarEsperaTraduccion();
@@ -394,12 +413,16 @@ async function bucle() {
         pintarBotonReproducir();
         return;
       }
+      const texto = textoVoz(o) || o.texto;
+      const suena = motor.hablar(estado.idx, texto, vozNeuronal(vozPara(idiomaVoz(o))));
       precargar();
-      const voz = textoVoz(o) || o.texto;
-      const resultado = await motor.hablar(estado.idx, voz);
+      const resultado = await suena;
       if (turno !== estado.turno || resultado === 'cancelado') return;
+      fallos = resultado === 'fallo' ? fallos + 1 : 0;
+      if (fallos >= 3) throw new Error('La voz neuronal dejó de generar audio. Pulsa reproducir para reintentar o elige otra voz en Ajustes.');
       const sig = siguienteLegible(estado.idx);
       if (sig < 0) {
+        neuronal.soltar();
         estado.sonando = false;
         pintarBotonReproducir();
         pintarEstado();
@@ -425,6 +448,7 @@ async function reproducir() {
     motor.reanudar();
     return;
   }
+  anotar('leer', `oracion=${estado.idx} instalada=${window.matchMedia('(display-mode: standalone)').matches}`);
   // Este clic habilita el audio: en iOS lo que suene después, ya bloqueado, depende de él.
   const voz = vozPara(idiomaVoz(estado.oraciones[estado.idx]));
   if (esNeuronal(voz)) neuronal.mantenerVivo();
@@ -440,7 +464,7 @@ function terminarEsperaTraduccion() {
   $('reproducir').dataset.espera = 'no';
 }
 
-function pausar() {
+function pausar({ externa = false } = {}) {
   estado.sonando = false;
   if (estado.esperandoTraduccion) {
     // Aún no empezó a sonar: al reanudar, la oración se lee desde el principio.
@@ -451,7 +475,7 @@ function pausar() {
     return;
   }
   estado.pausado = true;
-  motor?.pausar();
+  motor?.pausar({ externa });
   pintarBotonReproducir();
 }
 
@@ -476,7 +500,8 @@ function irA(i) {
   estado.pausado = false;
   estado.turno++;
   terminarEsperaTraduccion();
-  motor?.detener();
+  if (seguia && motor === neuronal) neuronal.soltar();
+  else motor?.detener();
   estado.idx = i;
   visor.retomarSeguimiento();
   marcar();
@@ -548,7 +573,10 @@ function pintarVozActual() {
 }
 
 function aplicarVoz(id, { persistir = true } = {}) {
-  if (id !== estado.vozElegida) detener(); // el sistema avisa de voces nuevas también a mitad de la lectura
+  if (id !== estado.vozElegida) { // el sistema avisa de voces nuevas también a mitad de la lectura
+    detener();
+    neuronal.vaciar();
+  }
   estado.vozElegida = id;
   if (persistir) guardar('voz', id);
   pintarVozActual();
@@ -556,7 +584,10 @@ function aplicarVoz(id, { persistir = true } = {}) {
 }
 
 function aplicarVozIngles(id, { persistir = true } = {}) {
-  if (id !== estado.vozIngles) detener();
+  if (id !== estado.vozIngles) {
+    detener();
+    neuronal.vaciar();
+  }
   estado.vozIngles = id;
   if (persistir) guardar('vozIngles', id);
   pintarVozActual();
@@ -569,9 +600,8 @@ async function activarVoz(id) {
     motor = neuronal;
     neuronal.cambiarVelocidad(estado.velocidad);
     const v = vozNeuronal(id);
-    if (neuronal.vozLista === v.id) return true;
+    if (neuronal.disponibles.has(v.id)) return true;
     if (!(await vozGuardada(v))) return false;
-    neuronal.mantenerVivo();
     return prepararNeuronal(v);
   }
   motor = dispositivo;
@@ -717,7 +747,9 @@ async function probarVoz(idioma) {
   }
   boton.disabled = true;
   try {
-    await motor.hablar(-1, idioma === 'en' ? FRASE_PRUEBA_INGLES : FRASE_PRUEBA);
+    const frase = idioma === 'en' ? FRASE_PRUEBA_INGLES : FRASE_PRUEBA;
+    if (motor === neuronal) await neuronal.probar(vozNeuronal(id), frase);
+    else await motor.hablar(-1, frase);
   } catch (e) {
     nota.classList.add('problema');
     nota.textContent = e.message;
@@ -813,6 +845,7 @@ async function arrancarTraduccion() {
       mostrarTraduccion(o);
       liberarEsperas(o.i);
       hechas++;
+      if (estado.sonando && hechas % 5 === 0) precargar();
     }
     nodo.remove();
   } catch (e) {
@@ -903,8 +936,17 @@ document.addEventListener('visibilitychange', () => {
 // Una llamada o desconectar los audífonos pausan el audio: la app debe mostrarlo y poder reanudar.
 audio.addEventListener('pause', () => {
   setTimeout(() => {
-    if (audio.paused && estado.sonando && motor === neuronal && !estado.esperandoTraduccion) pausar();
-  }, 500);
+    if (audio.paused && !audio.ended && estado.sonando && motor === neuronal && !estado.esperandoTraduccion) pausar({ externa: true });
+  }, 800);
+});
+// Cuando termina la interrupción, el sistema retoma el audio por su cuenta.
+audio.addEventListener('play', () => {
+  if (!estado.pausado || motor !== neuronal) return;
+  estado.pausado = false;
+  estado.sonando = true;
+  neuronal.enPausa = false;
+  neuronal.salida.enPausa = false;
+  pintarBotonReproducir();
 });
 
 /* ---------- Descargar audio ---------- */
@@ -997,7 +1039,7 @@ async function generarMp3() {
   guardar(`vozDescarga-${VOCES_INGLESAS.includes(v) ? 'en' : 'es'}`, v.id);
   detener();
   neuronal.liberar(); // el modelo de lectura no debe ocupar memoria mientras se genera el archivo
-  neuronal.mantenerVivo(); // para que la generación siga si se bloquea la pantalla
+  neuronal.sostener(); // para que la generación siga si se bloquea la pantalla
   panelDescarga('proceso');
   $('descarga-estado').textContent = 'Preparando la voz…';
   $('descarga-barra').value = 0;
@@ -1253,7 +1295,7 @@ $('voz-ingles-borrar').addEventListener('click', async () => {
   const v = vozNeuronal(estado.vozIngles);
   detener();
   await borrarVoz(v);
-  neuronal.vozLista = null;
+  neuronal.liberar();
   pintarNotaIngles();
 });
 $('voz-ingles-probar').addEventListener('click', () => probarVoz('en'));
@@ -1270,16 +1312,26 @@ $('voz-borrar').addEventListener('click', async () => {
   const v = vozNeuronal(estado.vozElegida);
   detener();
   await borrarVoz(v);
-  neuronal.vozLista = null;
+  neuronal.liberar();
   pintarNotaVoz();
 });
 $('voz-probar').addEventListener('click', () => probarVoz('es'));
+$('registro-copiar').addEventListener('click', async () => {
+  const extra = `salida=${neuronal.salida.tipo} hilos=${self.crossOriginIsolated ? 'si' : 'no'} nucleos=${navigator.hardwareConcurrency} voz=${estado.vozElegida.startsWith('piper:') ? estado.vozElegida : 'sistema'}`;
+  try {
+    await navigator.clipboard.writeText(textoRegistro(extra));
+    $('registro-nota').textContent = 'Registro copiado. Pégalo donde quieras compartirlo.';
+  } catch {
+    $('registro-nota').textContent = 'El navegador no permitió copiar. Inténtalo de nuevo.';
+  }
+});
 
 $('traducir').checked = estado.traducir;
 $('traducir').addEventListener('change', (e) => cambiarTraduccion(e.target.checked));
 $('omitir-referencias').checked = estado.omitirReferencias;
 $('omitir-citas').checked = estado.omitirCitas;
 function repintarOmitidas() {
+  neuronal.vaciar(); // lo ya encadenado puede incluir lo que ahora se salta
   for (const o of estado.oraciones) o.nodo?.classList.toggle('omitida', omitida(o));
   pulso.usar(estado.oraciones, omitida);
   pulso.mover(estado.idx);

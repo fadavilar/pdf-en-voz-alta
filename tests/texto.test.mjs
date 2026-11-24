@@ -5,7 +5,8 @@ import { construirDocumento, segmentar, idiomaDeTexto } from '../js/extraccion.j
 import { paraVoz } from '../js/pronunciacion.js';
 import { planificar, nombreMp3, duracionLegible } from '../js/exportar.js';
 import { plataforma } from '../js/instalar.js';
-import { ordenarVoces, mejorVoz, silencioWav } from '../js/motores.js';
+import { ordenarVoces, mejorVoz } from '../js/motores.js';
+import { ruidoWav, duracionMp3 } from '../js/salidas.js';
 
 const caja = (str, x, top, w = str.length * 5, h = 10) => ({ str, x, base: top + h * 0.86, top, w, h });
 
@@ -232,12 +233,19 @@ test('elige voces del idioma pedido y prefiere las que leen sin conexión', () =
   assert.equal(mejorVoz([]), null);
 });
 
-test('el audio que mantiene la sesión es un WAV válido y en silencio', () => {
-  const buffer = silencioWav();
+test('el sonido que mantiene la sesión dura más de 5 s y no es silencio exacto', () => {
+  const buffer = ruidoWav();
   const v = new DataView(buffer);
+  const muestras = new Int16Array(buffer, 44);
   assert.equal(String.fromCharCode(v.getUint8(0), v.getUint8(1), v.getUint8(2), v.getUint8(3)), 'RIFF');
   assert.equal(v.getUint32(40, true), buffer.byteLength - 44);
-  assert.ok(new Uint8Array(buffer, 44).every((b) => b === 0));
+  assert.ok(muestras.length / 8000 >= 5);
+  const rms = Math.sqrt(muestras.reduce((n, m) => n + m * m, 0) / muestras.length);
+  assert.ok(rms > 8 && rms < 60);
+});
+
+test('calcula la duración de un MP3 de 64 kbit/s', () => {
+  assert.equal(duracionMp3(80000), 10);
 });
 
 const elementosDe = (items) => construirDocumento([{ W: 600, H: 800, items }]).oraciones.map((o) => [o.texto, o.elemento]);

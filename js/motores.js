@@ -1,6 +1,8 @@
 // Dos motores con la misma interfaz: hablar, pausar, reanudar, detener y cambiar de velocidad.
 // El motor del dispositivo usa la Web Speech API; el neuronal, voces Piper dentro del navegador.
 
+import { SalidaFlujo, SalidaBloques, sonarRuido } from './salidas.js?v=20261124a';
+
 export const VOCES_NEURONALES = [
   { id: 'es_MX-ald-medium', nombre: 'Ald (México)', ruta: 'es/es_MX/ald/medium/es_MX-ald-medium.onnx', bytes: 63201294, licencia: 'Unlicense' },
   { id: 'es_MX-claude-high', nombre: 'Claude (México, alta calidad)', ruta: 'es/es_MX/claude/high/es_MX-claude-high.onnx', bytes: 63122309, licencia: 'Apache-2.0' },
@@ -46,28 +48,6 @@ export function mejorVoz(voces) {
 
 export function alCambiarVoces(fn) {
   if ('speechSynthesis' in window) speechSynthesis.addEventListener('voiceschanged', fn);
-}
-
-// Un segundo de silencio en WAV. Mientras suena, el teléfono mantiene abierta la sesión de audio
-// y no suspende la página aunque la pantalla esté bloqueada.
-export function silencioWav() {
-  const frecuencia = 8000;
-  const buffer = new ArrayBuffer(44 + frecuencia * 2);
-  const v = new DataView(buffer);
-  const ascii = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
-  ascii(0, 'RIFF');
-  v.setUint32(4, 36 + frecuencia * 2, true);
-  ascii(8, 'WAVEfmt ');
-  v.setUint32(16, 16, true);
-  v.setUint16(20, 1, true);
-  v.setUint16(22, 1, true);
-  v.setUint32(24, frecuencia, true);
-  v.setUint32(28, frecuencia * 2, true);
-  v.setUint16(32, 2, true);
-  v.setUint16(34, 16, true);
-  ascii(36, 'data');
-  v.setUint32(40, frecuencia * 2, true);
-  return buffer;
 }
 
 export class MotorDispositivo {
@@ -165,22 +145,34 @@ export class MotorDispositivo {
   precargar() {}
 }
 
+// Cuánto audio se deja listo por delante: si el teléfono frena el cálculo en segundo plano, alcanza.
+const ADELANTO_MAXIMO = 900;
+
 export class MotorNeuronal {
-  constructor(audio, { alEsperar, alProgreso } = {}) {
+  constructor(audio, { alEsperar, alProgreso, registrar } = {}) {
     this.tipo = 'neuronal';
     this.audio = audio;
     this.velocidad = 1;
     this.alEsperar = alEsperar;
     this.alProgreso = alProgreso;
+    this.registrar = registrar ?? (() => {});
     this.worker = null;
     this.vozLista = null;
+    this.disponibles = new Set();
     this.contador = 0;
     this.solicitudes = new Map();
     this.cola = [];
-    this.ocupado = false;
-    this.cache = new Map();
+    this.tramos = new Map();
+    this.produciendo = false;
+    this.generacion = 0;
     this.pendiente = null;
-    this.ultimaMedida = null;
+    this.enPausa = false;
+    this.reubicar = true;
+    this.vaciado = false;
+    this.ultima = false;
+    this.salida = SalidaFlujo.compatible() ? new SalidaFlujo(audio) : new SalidaBloques(audio);
+    for (const e of ['timeupdate', 'ended', 'seeked', 'waiting']) audio.addEventListener(e, () => this.#revisar());
+    setInterval(() => this.#revisar(), 500);
   }
 
   #mensaje({ data }) {
@@ -192,11 +184,18 @@ export class MotorNeuronal {
     this.solicitudes.delete(data.id);
     if (data.tipo === 'error') s?.reject(new Error(data.mensaje));
     else s?.resolve(data);
-    this.ocupado = false;
-    this.#siguiente();
   }
 
   #enviar(mensaje) {
+    if (!this.worker) {
+      this.worker = new Worker('js/piper-worker.js?v=20261124a');
+      this.worker.onmessage = (e) => this.#mensaje(e);
+      this.worker.onerror = (e) => {
+        const error = new Error(e.message || 'El motor de voz neuronal no pudo iniciar.');
+        for (const s of this.solicitudes.values()) s.reject(error);
+        this.solicitudes.clear();
+      };
+    }
     const id = ++this.contador;
     return new Promise((resolve, reject) => {
       this.solicitudes.set(id, { resolve, reject });
@@ -205,185 +204,239 @@ export class MotorNeuronal {
   }
 
   async preparar(voz) {
-    if (this.vozLista === voz.id) return;
-    if (!this.worker) {
-      this.worker = new Worker('js/piper-worker.js?v=20261106a');
-      this.worker.onmessage = (e) => this.#mensaje(e);
-      this.worker.onerror = (e) => {
-        const error = new Error(e.message || 'El motor de voz neuronal no pudo iniciar.');
-        for (const s of this.solicitudes.values()) s.reject(error);
-        this.solicitudes.clear();
-        this.ocupado = false;
-      };
-    }
-    this.vaciar();
-    this.ocupado = true;
-    await this.#enviar({ tipo: 'preparar', voz: { ruta: voz.ruta, bytes: voz.bytes } });
+    const r = await this.#enviar({ tipo: 'preparar', voz: { ruta: voz.ruta, bytes: voz.bytes } });
     this.vozLista = voz.id;
+    this.disponibles.add(voz.id);
+    this.registrar('voz:lista', `${voz.id} hilos=${r.hilos} salida=${this.salida.tipo}`);
   }
 
-  #siguiente() {
-    if (this.ocupado || !this.cola.length || !this.vozLista) return;
-    const tarea = this.cola.shift();
-    this.ocupado = true;
-    this.#enviar({ tipo: 'sintetizar', texto: tarea.texto }).then(
-      (r) => {
-        this.ultimaMedida = { ms: r.ms, segundos: r.segundos, msFonemas: r.msFonemas };
-        tarea.resolve(URL.createObjectURL(new Blob([r.wav], { type: 'audio/wav' })));
-      },
-      tarea.reject,
-    );
+  #sintetizar(voz, texto) {
+    return this.#enviar({ tipo: 'sintetizar', texto, voz: { ruta: voz.ruta, bytes: voz.bytes } });
   }
 
-  #obtener(i, texto, urgente) {
-    const clave = `${this.vozLista}:${i}:${texto}`;
-    let entrada = this.cache.get(clave);
-    if (!entrada) {
-      entrada = { i };
-      entrada.promesa = new Promise((resolve, reject) => {
-        const tarea = { texto, resolve, reject, clave };
-        entrada.tarea = tarea;
-        if (urgente) this.cola.unshift(tarea);
-        else this.cola.push(tarea);
-      }).then((url) => {
-        entrada.url = url;
-        entrada.tarea = null;
-        return url;
-      });
-      entrada.promesa.catch(() => this.cache.delete(clave));
-      this.cache.set(clave, entrada);
-      this.#siguiente();
-    } else if (urgente && entrada.tarea) {
-      const pos = this.cola.indexOf(entrada.tarea);
-      if (pos > 0) this.cola.unshift(...this.cola.splice(pos, 1));
-    }
-    return entrada.promesa;
+  #clave(i, texto, voz) {
+    return `${voz.id}:${i}:${texto}`;
   }
 
-  // Mantiene listo el audio de las próximas oraciones y libera el que quedó lejos.
-  precargar(lista, actual) {
-    const claves = new Set(lista.map(({ i, texto }) => `${this.vozLista}:${i}:${texto}`));
-    this.cola = this.cola.filter((t) => {
-      if (claves.has(t.clave)) return true;
-      this.cache.delete(t.clave);
-      return false;
+  #encolar(i, texto, voz) {
+    const clave = this.#clave(i, texto, voz);
+    let t = this.tramos.get(clave);
+    if (t) return t;
+    t = { i, texto, voz, hecho: false };
+    t.promesa = new Promise((resolve) => {
+      t.resolver = resolve;
     });
-    for (const [clave, e] of this.cache) {
-      if (e.url && Math.abs(e.i - actual) > 12) {
-        URL.revokeObjectURL(e.url);
-        this.cache.delete(clave);
+    this.tramos.set(clave, t);
+    this.cola.push(t);
+    this.#producir();
+    return t;
+  }
+
+  // Genera y encadena en orden. No depende de temporizadores, que en segundo plano se frenan.
+  async #producir() {
+    if (this.produciendo) return;
+    this.produciendo = true;
+    while (this.cola.length) {
+      if (this.salida.adelanto() > ADELANTO_MAXIMO) {
+        await new Promise((r) => this.audio.addEventListener('timeupdate', r, { once: true }));
+        continue;
       }
+      const generacion = this.generacion;
+      const t = this.cola.shift();
+      try {
+        const r = await this.#sintetizar(t.voz, t.texto);
+        if (generacion !== this.generacion) {
+          t.resolver();
+          continue;
+        }
+        Object.assign(t, await this.salida.agregar(new Uint8Array(r.mp3)));
+        t.hecho = generacion === this.generacion;
+        if (t.i % 10 === 0) this.registrar('audio:listo', `adelanto=${this.salida.adelanto().toFixed(0)}s ritmo=${(r.ms / 1000 / r.segundos).toFixed(2)}`);
+      } catch (e) {
+        t.error = e;
+        this.registrar('audio:fallo', e.message);
+      }
+      t.resolver();
     }
-    for (const { i, texto } of lista) this.#obtener(i, texto, false);
+    this.produciendo = false;
+    this.#cerrarSiEsElFinal();
   }
 
-  // Libera la memoria del modelo; la voz vuelve a cargarse desde la caché al reproducir.
-  liberar() {
-    this.detener();
-    this.vaciar();
-    this.worker?.terminate();
-    this.worker = null;
-    this.vozLista = null;
-    this.solicitudes.clear();
-    this.ocupado = false;
+  #cerrarSiEsElFinal() {
+    if (this.ultima && !this.cola.length && !this.produciendo && this.tramos.size) this.salida.terminar().catch(() => {});
   }
 
-  vaciar() {
-    this.cola = [];
-    for (const e of this.cache.values()) if (e.url) URL.revokeObjectURL(e.url);
-    this.cache.clear();
+  // Audio que debe quedar listo después de la oración en curso, en orden de lectura.
+  precargar(lista, { ultima = false } = {}) {
+    this.ultima = ultima;
+    for (const { i, texto, voz } of lista) this.#encolar(i, texto, voz);
+    this.#cerrarSiEsElFinal();
   }
 
-  // Hace sonar silencio hasta que llegue audio real. Debe llamarse desde un clic la primera vez.
+  adelanto() {
+    return this.salida.adelanto();
+  }
+
+  // Debe llamarse desde un clic: deja la reproducción abierta aunque el audio aún no exista.
   mantenerVivo() {
-    const a = this.audio;
-    if (this.enSilencio && !a.paused) return;
-    this.silencio ??= URL.createObjectURL(new Blob([silencioWav()], { type: 'audio/wav' }));
-    this.enSilencio = true;
-    a.onended = null;
-    a.onerror = null;
-    a.loop = true;
-    a.src = this.silencio;
-    a.play().catch(() => {});
+    this.enPausa = false;
+    this.salida.enPausa = false;
+    if (this.vaciado) {
+      this.vaciado = false;
+      this.#reiniciar(); // que no suene lo anterior mientras se prepara lo nuevo
+    }
+    this.salida.abrir();
+    this.#velocidad();
+    if (!this.audio.ended) this.audio.play().catch(() => {}); // al terminar, reproducir volvería al comienzo
   }
 
-  #soltar() {
+  // Mantiene despierta la página sin leer nada (por ejemplo, mientras se genera el MP3).
+  sostener() {
+    this.salida.cerrar();
+    sonarRuido(this.audio);
+  }
+
+  async #reiniciar() {
+    this.generacion++;
+    for (const t of this.cola) t.resolver();
+    this.cola = [];
+    this.tramos.clear();
+    this.ultima = false;
+    await this.salida.saltar();
+  }
+
+  #revisar() {
+    const p = this.pendiente;
+    if (!p || this.enPausa) return;
+    // Cada oración cierra con una pausa: adelantarse un poco no corta nada. Y si se agotó el audio
+    // listo, el navegador se detiene unas décimas antes del final y nunca llega al borde exacto.
+    const falta = p.fin - this.salida.posicion();
+    const agotado = this.audio.readyState < 3 && falta < 0.8;
+    if (falta <= 0.15 || agotado || (this.audio.ended && !this.salida.bloque)) {
+      this.pendiente = null;
+      p.resolve('fin');
+    }
+  }
+
+  // Se resuelve cuando la oración terminó de sonar. Si el código estuvo suspendido y el audio ya pasó
+  // de largo, se resuelve enseguida y el resaltado se pone al día.
+  async hablar(i, texto, voz) {
+    this.#cancelarEspera();
+    const turno = {};
+    this.turnoActual = turno;
     this.enPausa = false;
+    this.salida.enPausa = false;
+    let t = this.tramos.get(this.#clave(i, texto, voz));
+    if (this.vaciado || !t || (this.reubicar && !(t.hecho && this.salida.ir(t.ini)))) {
+      this.vaciado = false;
+      const reinicio = this.#reiniciar();
+      t = this.#encolar(i, texto, voz);
+      await reinicio;
+    }
+    this.reubicar = false;
+    if (t.hecho && t.ini - this.salida.posicion() > 0.5) this.salida.ir(t.ini);
+    await this.salida.abrir();
+    if (this.turnoActual !== turno) return 'cancelado';
+    this.#velocidad();
+    this.#arrancar();
+    const aviso = setTimeout(() => {
+      if (!t.hecho && this.turnoActual === turno) this.alEsperar?.(true);
+    }, 200);
+    await t.promesa;
+    clearTimeout(aviso);
+    this.alEsperar?.(false);
+    if (this.turnoActual !== turno) return 'cancelado';
+    if (t.error) return 'fallo';
+    if (!t.hecho) return this.hablar(i, texto, voz); // se descartó al cambiar un ajuste: se genera de nuevo
+    this.#arrancar();
+    return new Promise((resolve) => {
+      this.pendiente = { fin: t.fin, resolve };
+      this.#revisar();
+    });
+  }
+
+  #arrancar() {
+    if (!this.audio.paused || this.audio.ended || this.enPausa) return;
+    this.audio.play().catch((e) => {
+      if (e.name === 'NotAllowedError') this.registrar('audio:bloqueado', e.message);
+    });
+  }
+
+  async probar(voz, texto) {
+    const r = await this.#sintetizar(voz, texto);
+    this.vozLista = voz.id;
+    const url = URL.createObjectURL(new Blob([r.mp3], { type: 'audio/mpeg' }));
+    const a = new Audio(url);
+    await new Promise((resolve, reject) => {
+      a.onended = resolve;
+      a.onerror = () => reject(new Error('No se pudo reproducir la prueba.'));
+      a.play().catch(reject);
+    });
+    URL.revokeObjectURL(url);
+  }
+
+  #velocidad() {
+    this.audio.defaultPlaybackRate = this.velocidad;
+    this.audio.playbackRate = this.velocidad;
+  }
+
+  cambiarVelocidad(v) {
+    this.velocidad = v;
+    this.#velocidad();
+  }
+
+  pausar({ externa = false } = {}) {
+    this.enPausa = true;
+    this.salida.enPausa = true;
+    if (!externa) this.audio.pause();
+  }
+
+  reanudar() {
+    this.enPausa = false;
+    this.salida.enPausa = false;
+    this.audio.play().catch(() => {});
+  }
+
+  #cancelarEspera() {
     this.turnoActual = null;
-    this.audio.onended = null;
-    this.audio.onerror = null;
     if (this.pendiente) {
       this.pendiente.resolve('cancelado');
       this.pendiente = null;
     }
   }
 
-  async hablar(i, texto) {
-    // Sin pausar el reproductor: cortar el sonido entre oraciones cierra la sesión de audio.
-    this.#soltar();
-    const turno = {};
-    this.turnoActual = turno;
-    if (!this.cache.get(`${this.vozLista}:${i}:${texto}`)?.url) this.mantenerVivo();
-    let listo = false;
-    const aviso = setTimeout(() => {
-      if (!listo && this.turnoActual === turno) this.alEsperar?.(true);
-    }, 150);
-    let url;
-    try {
-      url = await this.#obtener(i, texto, true);
-    } finally {
-      listo = true;
-      clearTimeout(aviso);
-      this.alEsperar?.(false);
-    }
-    if (this.turnoActual !== turno) return 'cancelado';
-    return new Promise((resolve, reject) => {
-      this.pendiente = { resolve };
-      const a = this.audio;
-      a.onended = () => {
-        this.pendiente = null;
-        resolve('fin');
-      };
-      a.onerror = () => {
-        this.pendiente = null;
-        reject(new Error('No se pudo reproducir el audio generado.'));
-      };
-      this.enSilencio = false;
-      a.loop = false;
-      a.defaultPlaybackRate = this.velocidad;
-      a.src = url;
-      a.playbackRate = this.velocidad;
-      if (!this.enPausa) a.play().catch((e) => {
-        if (e.name !== 'AbortError') {
-          this.pendiente = null;
-          reject(new Error('El navegador bloqueó el audio. Pulsa reproducir de nuevo.'));
-        }
-      });
-    });
-  }
-
-  pausar() {
-    this.enPausa = true;
-    this.audio.pause();
-  }
-
-  reanudar() {
-    this.enPausa = false;
-    if (this.audio.src && this.pendiente) this.audio.play().catch(() => {});
-    else if (this.turnoActual) this.mantenerVivo();
+  // Cambia de oración sin cortar el audio: en segundo plano, volver a arrancarlo puede estar prohibido.
+  soltar() {
+    this.#cancelarEspera();
+    this.reubicar = true;
   }
 
   detener() {
-    this.#soltar();
-    this.enSilencio = false;
-    this.audio.loop = false;
+    this.soltar();
+    this.enPausa = false;
     this.audio.pause();
   }
 
-  cambiarVelocidad(v) {
-    this.velocidad = v;
-    this.audio.defaultPlaybackRate = v;
-    this.audio.playbackRate = v;
+  // Lo generado ya no sirve (cambió el idioma, las citas o la voz).
+  vaciar() {
+    this.generacion++;
+    for (const t of this.cola) t.resolver();
+    this.cola = [];
+    this.vaciado = true;
+  }
+
+  // Libera la memoria del modelo; la voz vuelve a cargarse desde la caché al reproducir.
+  liberar() {
+    this.detener();
+    this.vaciar();
+    this.tramos.clear();
+    this.salida.cerrar();
+    this.worker?.terminate();
+    this.worker = null;
+    this.vozLista = null;
+    this.disponibles.clear();
+    for (const s of this.solicitudes.values()) s.reject(new Error('motor cerrado'));
+    this.solicitudes.clear();
   }
 }
 
